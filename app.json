@@ -45,6 +45,14 @@
         {
           "cameraPermission": "Quick Scan needs camera access to scan documents"
         }
+      ],
+      [
+        "react-native-vision-camera",
+        {
+          "cameraPermissionText": "Quick Scan needs camera access to scan and detect documents",
+          "enableCodeScanner": false,
+          "enableMicrophonePermission": false
+        }
       ]
     ]
   }

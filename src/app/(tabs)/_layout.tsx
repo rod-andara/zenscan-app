@@ -16,10 +16,16 @@ export default function TabLayout() {
       }}
     >
       <Tabs.Screen
-        name="index"
+        name="camera"
         options={{
           title: 'Scan',
           tabBarIcon: ({ color }) => <TabIcon name="camera" color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="index"
+        options={{
+          href: null, // Hide old camera screen
         }}
       />
       <Tabs.Screen
