@@ -100,7 +100,7 @@ export default function CameraScreen() {
 
         addDocument(newDocument);
         setCurrentDocument(newDocument);
-        router.push('/edit');
+        router.push('/edit/');
       }
     } catch (error) {
       console.error('Error capturing photo:', error);
@@ -121,7 +121,7 @@ export default function CameraScreen() {
     addDocument(newDocument);
     setCurrentDocument(newDocument);
     setCapturedPages([]);
-    router.push('/edit');
+    router.push('/edit/');
   };
 
   const toggleBatchMode = () => {
