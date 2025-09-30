@@ -1,30 +1,23 @@
 {
-  "name": "zenscan-fresh",
+  "name": "quick-scan-snack",
   "version": "1.0.0",
-  "main": "expo-router/entry",
+  "main": "App.js",
   "scripts": {
     "start": "expo start",
-    "android": "expo run:android",
-    "ios": "expo run:ios",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
     "web": "expo start --web"
   },
   "dependencies": {
-    "@react-navigation/native": "^7.1.17",
-    "expo": "~54.0.10",
-    "expo-camera": "~17.0.8",
-    "expo-image-manipulator": "~14.0.7",
-    "expo-image-picker": "~17.0.8",
-    "expo-router": "^6.0.8",
-    "expo-status-bar": "~3.0.8",
-    "react": "19.1.0",
-    "react-native": "0.81.4",
-    "react-native-gesture-handler": "^2.28.0",
-    "react-native-reanimated": "^4.1.2",
-    "zustand": "^5.0.8"
+    "expo": "~52.0.0",
+    "expo-camera": "~16.0.0",
+    "expo-image-manipulator": "~13.0.0",
+    "expo-status-bar": "~2.0.0",
+    "react": "18.3.1",
+    "react-native": "0.76.5"
   },
   "devDependencies": {
-    "@types/react": "~19.1.0",
-    "typescript": "~5.9.2"
+    "@babel/core": "^7.25.2"
   },
   "private": true
 }
