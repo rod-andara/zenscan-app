@@ -1,4 +1,6 @@
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, Dimensions } from 'react-native';
+import { useRouter } from 'expo-router';
+import { useState } from 'react';
 import { useDocumentStore } from '../../stores/documentStore';
 import { colors, spacing, typography } from '../../design/tokens';
 import { Image } from 'react-native';
@@ -8,7 +10,22 @@ const numColumns = 2;
 const itemWidth = (width - spacing.md * 3) / numColumns;
 
 export default function DocumentsScreen() {
+  const router = useRouter();
   const documents = useDocumentStore((state) => state.documents);
+  const [debugTapCount, setDebugTapCount] = useState(0);
+
+  const handleDebugTap = () => {
+    const newCount = debugTapCount + 1;
+    setDebugTapCount(newCount);
+
+    if (newCount >= 5) {
+      setDebugTapCount(0);
+      router.push('/debug');
+    }
+
+    // Reset counter after 2 seconds
+    setTimeout(() => setDebugTapCount(0), 2000);
+  };
 
   if (documents.length === 0) {
     return (
@@ -26,10 +43,10 @@ export default function DocumentsScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
+      <TouchableOpacity style={styles.header} onPress={handleDebugTap} activeOpacity={1}>
         <Text style={styles.headerTitle}>My Documents</Text>
         <Text style={styles.headerSubtitle}>{documents.length} documents</Text>
-      </View>
+      </TouchableOpacity>
 
       <FlatList
         data={documents}

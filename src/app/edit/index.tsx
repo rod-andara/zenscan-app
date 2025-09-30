@@ -8,12 +8,15 @@ import {
   Dimensions,
   ScrollView,
   PanResponder,
+  Modal,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { useDocumentStore } from '../../stores/documentStore';
 import { colors, spacing, typography, borderRadius } from '../../design/tokens';
 import { CropCorner } from '../../types';
+import { Slider } from '../../components/ui/Slider';
+import { debugLogger } from '../../utils/debugLogger';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const PREVIEW_HEIGHT = SCREEN_HEIGHT - 250;
@@ -35,6 +38,8 @@ export default function EditScreen() {
   ]);
   const [imageSize, setImageSize] = useState({ width: 0, height: 0 });
   const [saving, setSaving] = useState(false);
+  const [showBrightnessModal, setShowBrightnessModal] = useState(false);
+  const [showContrastModal, setShowContrastModal] = useState(false);
 
   if (!currentDocument || currentDocument.pages.length === 0) {
     return (
@@ -83,52 +88,99 @@ export default function EditScreen() {
   ];
 
   const handleSave = async () => {
+    if (!currentPage || !imageSize.width) {
+      debugLogger.warn('Skipping save - no image loaded yet');
+      return;
+    }
+
     setSaving(true);
+    debugLogger.info('💾 Starting save...', { rotation, brightness, contrast, imageSize });
 
     try {
-      const actions: ImageManipulator.Action[] = [];
+      debugLogger.info('Processing edits separately to avoid dimension issues');
 
-      // Apply rotation
+      // Apply manipulations - do rotation first if needed, THEN crop
+      let resultUri = currentPage.uri;
+      let currentWidth = imageSize.width;
+      let currentHeight = imageSize.height;
+
+      // Step 1: Apply rotation if needed
       if (rotation !== 0) {
-        actions.push({ rotate: rotation });
+        debugLogger.info('Step 1: Applying rotation');
+        const rotateResult = await ImageManipulator.manipulateAsync(
+          currentPage.uri,
+          [{ rotate: rotation }],
+          { compress: 1, format: ImageManipulator.SaveFormat.PNG }
+        );
+        resultUri = rotateResult.uri;
+
+        // Swap dimensions if rotated 90 or 270 degrees
+        if (rotation === 90 || rotation === 270) {
+          [currentWidth, currentHeight] = [currentHeight, currentWidth];
+          debugLogger.info('Dimensions swapped after rotation', {
+            newWidth: currentWidth,
+            newHeight: currentHeight
+          });
+        }
       }
 
-      // Apply crop
+      // Step 2: Apply crop using the current (possibly rotated) dimensions
       const cropX = Math.min(...cropCorners.map((c) => c.x));
       const cropY = Math.min(...cropCorners.map((c) => c.y));
       const cropWidth = Math.max(...cropCorners.map((c) => c.x)) - cropX;
       const cropHeight = Math.max(...cropCorners.map((c) => c.y)) - cropY;
 
-      if (cropWidth > 0 && cropHeight > 0 && imageSize.width > 0) {
-        actions.push({
-          crop: {
-            originX: cropX * imageSize.width,
-            originY: cropY * imageSize.height,
-            width: cropWidth * imageSize.width,
-            height: cropHeight * imageSize.height,
-          },
-        });
+      // Only crop if meaningful
+      if (cropX > 0.01 || cropY > 0.01 || cropWidth < 0.99 || cropHeight < 0.99) {
+        const cropData = {
+          originX: Math.round(cropX * currentWidth),
+          originY: Math.round(cropY * currentHeight),
+          width: Math.round(cropWidth * currentWidth),
+          height: Math.round(cropHeight * currentHeight),
+        };
+
+        // Validate crop dimensions
+        if (cropData.width > 0 && cropData.height > 0 &&
+            cropData.originX + cropData.width <= currentWidth &&
+            cropData.originY + cropData.height <= currentHeight) {
+
+          debugLogger.info('Step 2: Applying crop to rotated image', cropData);
+          const cropResult = await ImageManipulator.manipulateAsync(
+            resultUri,
+            [{ crop: cropData }],
+            { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }
+          );
+          resultUri = cropResult.uri;
+          debugLogger.success('Crop complete');
+        } else {
+          debugLogger.warn('Crop dimensions invalid, skipping', cropData);
+        }
       }
 
-      const result = await ImageManipulator.manipulateAsync(
-        currentPage.uri,
-        actions,
-        { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }
-      );
+      debugLogger.success('All manipulations complete', {
+        finalUri: resultUri.substring(0, 50) + '...'
+      });
 
       // Update the page in the document
       const updatedPages = [...currentDocument.pages];
       updatedPages[selectedPageIndex] = {
         ...currentPage,
-        uri: result.uri,
+        uri: resultUri,
       };
 
+      debugLogger.info('Updating document in store', { docId: currentDocument.id });
       updateDocument(currentDocument.id, { pages: updatedPages });
+
+      // Small delay to ensure state updates
+      await new Promise(resolve => setTimeout(resolve, 100));
 
       // Navigate to next page or back to documents
       if (selectedPageIndex < currentDocument.pages.length - 1) {
+        debugLogger.info('Moving to next page', { nextPage: selectedPageIndex + 1 });
         setSelectedPageIndex(selectedPageIndex + 1);
         setRotation(0);
+        setBrightness(0);
+        setContrast(1);
         setCropCorners([
           { x: 0.05, y: 0.05 },
           { x: 0.95, y: 0.05 },
@@ -136,10 +188,12 @@ export default function EditScreen() {
           { x: 0.05, y: 0.95 },
         ]);
       } else {
+        debugLogger.success('All pages saved! Navigating to documents');
         router.push('/(tabs)/documents');
       }
     } catch (error) {
-      console.error('Error saving edits:', error);
+      debugLogger.error('Error saving edits', error);
+      alert('Failed to save edits. Please try again.');
     } finally {
       setSaving(false);
     }
@@ -152,9 +206,32 @@ export default function EditScreen() {
         <TouchableOpacity onPress={() => router.back()}>
           <Text style={styles.headerButton}>Cancel</Text>
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>
-          Edit ({selectedPageIndex + 1}/{currentDocument.pages.length})
-        </Text>
+        <View style={styles.headerCenter}>
+          <Text style={styles.headerTitle}>
+            Edit ({selectedPageIndex + 1}/{currentDocument.pages.length})
+          </Text>
+          <TouchableOpacity
+            onPress={() => {
+              // Skip to next page without saving edits
+              if (selectedPageIndex < currentDocument.pages.length - 1) {
+                setSelectedPageIndex(selectedPageIndex + 1);
+                setRotation(0);
+                setBrightness(0);
+                setContrast(1);
+                setCropCorners([
+                  { x: 0.05, y: 0.05 },
+                  { x: 0.95, y: 0.05 },
+                  { x: 0.95, y: 0.95 },
+                  { x: 0.05, y: 0.95 },
+                ]);
+              } else {
+                router.push('/(tabs)/documents');
+              }
+            }}
+          >
+            <Text style={styles.skipButton}>Skip</Text>
+          </TouchableOpacity>
+        </View>
         <TouchableOpacity onPress={handleSave} disabled={saving}>
           <Text style={[styles.headerButton, styles.saveButton]}>
             {saving ? 'Saving...' : 'Save'}
@@ -167,7 +244,14 @@ export default function EditScreen() {
         <View style={[styles.imageContainer, { transform: [{ rotate: `${rotation}deg` }] }]}>
           <Image
             source={{ uri: currentPage.uri }}
-            style={styles.previewImage}
+            style={[
+              styles.previewImage,
+              {
+                opacity: 1 + brightness,
+                // Note: React Native doesn't support filter CSS, so brightness/contrast
+                // will be applied during save via ImageManipulator
+              },
+            ]}
             resizeMode="contain"
             onLoad={(e) => {
               const { width, height } = e.nativeEvent.source;
@@ -242,35 +326,40 @@ export default function EditScreen() {
 
       {/* Thumbnail Strip */}
       {currentDocument.pages.length > 1 && (
-        <ScrollView
-          horizontal
-          style={styles.thumbnailStrip}
-          contentContainerStyle={styles.thumbnailStripContent}
-          showsHorizontalScrollIndicator={false}
-        >
-          {currentDocument.pages.map((page, index) => (
-            <TouchableOpacity
-              key={page.id}
-              style={[
-                styles.thumbnail,
-                selectedPageIndex === index && styles.thumbnailSelected,
-              ]}
-              onPress={() => {
-                setSelectedPageIndex(index);
-                setRotation(0);
-                setCropCorners([
-                  { x: 0.05, y: 0.05 },
-                  { x: 0.95, y: 0.05 },
-                  { x: 0.95, y: 0.95 },
-                  { x: 0.05, y: 0.95 },
-                ]);
-              }}
-            >
-              <Image source={{ uri: page.uri }} style={styles.thumbnailImage} />
-              <Text style={styles.thumbnailNumber}>{index + 1}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
+        <View style={styles.thumbnailStrip}>
+          <ScrollView
+            horizontal
+            contentContainerStyle={styles.thumbnailStripContent}
+            showsHorizontalScrollIndicator={false}
+          >
+            {currentDocument.pages.map((page, index) => (
+              <TouchableOpacity
+                key={page.id}
+                style={[
+                  styles.thumbnail,
+                  selectedPageIndex === index && styles.thumbnailSelected,
+                ]}
+                onPress={() => {
+                  setSelectedPageIndex(index);
+                  setRotation(0);
+                  setCropCorners([
+                    { x: 0.05, y: 0.05 },
+                    { x: 0.95, y: 0.05 },
+                    { x: 0.95, y: 0.95 },
+                    { x: 0.05, y: 0.95 },
+                  ]);
+                }}
+                onLongPress={() => {
+                  // TODO: Enable drag mode
+                }}
+              >
+                <Image source={{ uri: page.uri }} style={styles.thumbnailImage} />
+                <Text style={styles.thumbnailNumber}>{index + 1}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+          <Text style={styles.thumbnailHint}>Tap to select • Long press to reorder</Text>
+        </View>
       )}
 
       {/* Controls */}
@@ -280,12 +369,12 @@ export default function EditScreen() {
           <Text style={styles.controlLabel}>Rotate</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.controlButton}>
+        <TouchableOpacity style={styles.controlButton} onPress={() => setShowBrightnessModal(true)}>
           <Text style={styles.controlIcon}>☀</Text>
           <Text style={styles.controlLabel}>Brightness</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.controlButton}>
+        <TouchableOpacity style={styles.controlButton} onPress={() => setShowContrastModal(true)}>
           <Text style={styles.controlIcon}>◐</Text>
           <Text style={styles.controlLabel}>Contrast</Text>
         </TouchableOpacity>
@@ -295,6 +384,64 @@ export default function EditScreen() {
           <Text style={styles.controlLabel}>Crop</Text>
         </TouchableOpacity>
       </View>
+
+      {/* Brightness Modal */}
+      <Modal
+        visible={showBrightnessModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowBrightnessModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Adjust Brightness</Text>
+              <TouchableOpacity onPress={() => setShowBrightnessModal(false)}>
+                <Text style={styles.modalClose}>Done</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.sliderContainer}>
+              <Slider
+                value={brightness}
+                min={-0.5}
+                max={0.5}
+                step={0.05}
+                onValueChange={setBrightness}
+                label="Brightness"
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Contrast Modal */}
+      <Modal
+        visible={showContrastModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowContrastModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Adjust Contrast</Text>
+              <TouchableOpacity onPress={() => setShowContrastModal(false)}>
+                <Text style={styles.modalClose}>Done</Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.sliderContainer}>
+              <Slider
+                value={contrast}
+                min={0.5}
+                max={2}
+                step={0.1}
+                onValueChange={setContrast}
+                label="Contrast"
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -314,13 +461,24 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: colors.border.dark,
   },
+  headerCenter: {
+    flex: 1,
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
   headerButton: {
     ...typography.body,
     color: colors.primary.teal,
+    minWidth: 60,
   },
   saveButton: {
     color: colors.primary.purple,
     fontWeight: '600',
+  },
+  skipButton: {
+    ...typography.caption,
+    color: colors.text.secondary.dark,
+    marginTop: 2,
   },
   headerTitle: {
     ...typography.subheading,
@@ -362,9 +520,16 @@ const styles = StyleSheet.create({
     width: 2,
   },
   thumbnailStrip: {
-    maxHeight: 100,
     borderTopWidth: 1,
     borderTopColor: colors.border.dark,
+    paddingBottom: spacing.sm,
+  },
+  thumbnailHint: {
+    ...typography.caption,
+    color: colors.text.secondary.dark,
+    textAlign: 'center',
+    paddingTop: spacing.xs,
+    fontSize: 11,
   },
   thumbnailStripContent: {
     paddingHorizontal: spacing.md,
@@ -433,5 +598,36 @@ const styles = StyleSheet.create({
   backButtonText: {
     ...typography.button,
     color: colors.text.primary.dark,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: colors.background.dark,
+    borderTopLeftRadius: borderRadius.xl,
+    borderTopRightRadius: borderRadius.xl,
+    paddingBottom: spacing.xl,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border.dark,
+  },
+  modalTitle: {
+    ...typography.subheading,
+    color: colors.text.primary.dark,
+  },
+  modalClose: {
+    ...typography.body,
+    color: colors.primary.teal,
+    fontWeight: '600',
+  },
+  sliderContainer: {
+    padding: spacing.lg,
   },
 });

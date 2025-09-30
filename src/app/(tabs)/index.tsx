@@ -13,6 +13,7 @@ import { colors, spacing, typography, borderRadius } from '../../design/tokens';
 import { useDocumentStore } from '../../stores/documentStore';
 import { useSubscriptionStore } from '../../stores/subscriptionStore';
 import { Document, Page } from '../../types';
+import { debugLogger } from '../../utils/debugLogger';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -53,7 +54,11 @@ export default function CameraScreen() {
   }
 
   const handleCapture = async () => {
-    if (!cameraRef.current) return;
+    debugLogger.info('📸 Capture button pressed');
+    if (!cameraRef.current) {
+      debugLogger.error('Camera ref not available');
+      return;
+    }
 
     // Pulse animation for feedback
     Animated.sequence([
@@ -74,7 +79,15 @@ export default function CameraScreen() {
         quality: 0.9,
       });
 
-      if (!photo) return;
+      if (!photo) {
+        debugLogger.warn('No photo returned from camera');
+        return;
+      }
+
+      debugLogger.success('Photo captured', {
+        width: photo.width,
+        height: photo.height,
+      });
 
       const newPage: Page = {
         id: Date.now().toString(),
@@ -87,6 +100,7 @@ export default function CameraScreen() {
 
       if (isBatchMode && checkFeatureAccess('batch')) {
         // Add to batch
+        debugLogger.info('Adding to batch', { pageCount: capturedPages.length + 1 });
         setCapturedPages([...capturedPages, newPage]);
       } else {
         // Single page - create document and go to edit
@@ -98,12 +112,17 @@ export default function CameraScreen() {
           updatedAt: new Date(),
         };
 
+        debugLogger.info('Creating new document', {
+          id: newDocument.id,
+          title: newDocument.title,
+        });
         addDocument(newDocument);
         setCurrentDocument(newDocument);
+        debugLogger.info('Navigating to edit screen');
         router.push('/edit/');
       }
     } catch (error) {
-      console.error('Error capturing photo:', error);
+      debugLogger.error('Error capturing photo', error);
     }
   };
 
