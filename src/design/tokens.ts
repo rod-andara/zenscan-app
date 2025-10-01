@@ -25,6 +25,11 @@ export const colors = {
     light: '#E5E5E5',
     dark: '#333333',
   },
+  status: {
+    success: '#10B981',
+    warning: '#F59E0B',
+    error: '#EF4444',
+  },
   overlay: 'rgba(0, 0, 0, 0.5)',
 };
 

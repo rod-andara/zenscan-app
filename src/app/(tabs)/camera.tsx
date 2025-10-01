@@ -7,14 +7,26 @@ import {
   Dimensions,
   Platform,
   Alert,
+  Linking,
+  Switch,
 } from 'react-native';
-import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
+import { Camera, useCameraDevice, useCameraPermission, useFrameProcessor } from 'react-native-vision-camera';
 import { useRouter } from 'expo-router';
+import { useSharedValue, runOnJS } from 'react-native-reanimated';
+import ReactNativeHapticFeedback from 'react-native-haptic-feedback';
+import * as FileSystem from 'expo-file-system';
 import { colors, spacing, typography, borderRadius } from '../../design/tokens';
 import { useDocumentStore } from '../../stores/documentStore';
 import { debugLogger } from '../../utils/debugLogger';
 import { detectDocumentEdges, ScanMode, enhancementPresets } from '../../utils/documentDetection';
 import { Document, Page } from '../../types';
+import { DocumentDetectionOverlay } from '../../components/DocumentDetectionOverlay';
+import {
+  DetectedRectangle,
+  detectRectangleInFrame,
+  isRectangleStable,
+  isRectangleLargeEnough,
+} from '../../utils/documentFrameProcessor';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -26,15 +38,21 @@ const SCAN_MODES: { id: ScanMode; label: string; icon: string }[] = [
   { id: 'photo', label: 'Photo', icon: '📷' },
 ];
 
+const STABILITY_THRESHOLD = 300; // ms
+const STABILITY_DISTANCE = 20; // pixels
+
 export default function EnhancedCameraScreen() {
   const router = useRouter();
   const cameraRef = useRef<Camera>(null);
 
   const [cameraPosition, setCameraPosition] = useState<'back' | 'front'>('back');
-  const [flash, setFlash] = useState<'off' | 'on'>('off');
+  const [flash, setFlash] = useState<'off' | 'on' | 'auto'>('off');
   const [scanMode, setScanMode] = useState<ScanMode>('document');
   const [isCapturing, setIsCapturing] = useState(false);
   const [showModeSelector, setShowModeSelector] = useState(false);
+  const [autoCapture, setAutoCapture] = useState(false);
+  const [detectedCorners, setDetectedCorners] = useState<[any, any, any, any] | null>(null);
+  const [isStable, setIsStable] = useState(false);
 
   const { hasPermission, requestPermission } = useCameraPermission();
   const device = useCameraDevice(cameraPosition);
@@ -42,11 +60,83 @@ export default function EnhancedCameraScreen() {
   const addDocument = useDocumentStore((state) => state.addDocument);
   const setCurrentDocument = useDocumentStore((state) => state.setCurrentDocument);
 
+  // Shared values for frame processor
+  const lastDetection = useSharedValue<DetectedRectangle | null>(null);
+  const stableStartTime = useSharedValue<number>(0);
+  const hasTriggeredHaptic = useSharedValue<boolean>(false);
+
   useEffect(() => {
     if (!hasPermission) {
       requestPermission();
     }
   }, [hasPermission]);
+
+  // Callbacks from frame processor (must be wrapped with runOnJS)
+  const onDetectionUpdate = useCallback((corners: [any, any, any, any] | null) => {
+    setDetectedCorners(corners);
+  }, []);
+
+  const onStabilityChange = useCallback((stable: boolean) => {
+    setIsStable(stable);
+  }, []);
+
+  const triggerHaptic = useCallback(() => {
+    ReactNativeHapticFeedback.trigger('impactMedium', {
+      enableVibrateFallback: true,
+      ignoreAndroidSystemSettings: false,
+    });
+  }, []);
+
+  const triggerAutoCapture = useCallback(() => {
+    if (autoCapture && !isCapturing) {
+      debugLogger.info('Auto-capture triggered');
+      handleCapture();
+    }
+  }, [autoCapture, isCapturing]);
+
+  // Real-time frame processor
+  const frameProcessor = useFrameProcessor((frame) => {
+    'worklet';
+
+    const detected = detectRectangleInFrame(frame);
+
+    if (detected && isRectangleLargeEnough(detected.corners, frame.width, frame.height)) {
+      // Update detection on main thread
+      runOnJS(onDetectionUpdate)(detected.corners);
+
+      // Check stability
+      const stable = isRectangleStable(detected, lastDetection.value, STABILITY_DISTANCE);
+
+      if (stable) {
+        const now = Date.now();
+        if (stableStartTime.value === 0) {
+          stableStartTime.value = now;
+        } else if (now - stableStartTime.value >= STABILITY_THRESHOLD) {
+          runOnJS(onStabilityChange)(true);
+
+          // Trigger haptic once when stable
+          if (!hasTriggeredHaptic.value) {
+            runOnJS(triggerHaptic)();
+            hasTriggeredHaptic.value = true;
+
+            // Trigger auto-capture if enabled
+            runOnJS(triggerAutoCapture)();
+          }
+        }
+      } else {
+        stableStartTime.value = 0;
+        hasTriggeredHaptic.value = false;
+        runOnJS(onStabilityChange)(false);
+      }
+
+      lastDetection.value = detected;
+    } else {
+      runOnJS(onDetectionUpdate)(null);
+      runOnJS(onStabilityChange)(false);
+      stableStartTime.value = 0;
+      hasTriggeredHaptic.value = false;
+    }
+  }, [autoCapture, isCapturing]);
 
   const handleCapture = useCallback(async () => {
     if (!cameraRef.current || isCapturing) {
@@ -112,7 +202,11 @@ export default function EnhancedCameraScreen() {
   }, [flash, scanMode, isCapturing, addDocument, setCurrentDocument, router]);
 
   const toggleFlash = useCallback(() => {
-    setFlash((current) => (current === 'off' ? 'on' : 'off'));
+    setFlash((current) => {
+      if (current === 'off') return 'auto';
+      if (current === 'auto') return 'on';
+      return 'off';
+    });
   }, []);
 
   const toggleCamera = useCallback(() => {
@@ -122,6 +216,10 @@ export default function EnhancedCameraScreen() {
   const handleNavigateToDocuments = useCallback(() => {
     router.push('/(tabs)/documents');
   }, [router]);
+
+  const openSettings = useCallback(() => {
+    Linking.openSettings();
+  }, []);
 
   if (!hasPermission) {
     return (
@@ -134,6 +232,9 @@ export default function EnhancedCameraScreen() {
           </Text>
           <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
             <Text style={styles.permissionButtonText}>Grant Camera Access</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.settingsButton} onPress={openSettings}>
+            <Text style={styles.settingsButtonText}>Open Settings</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -157,37 +258,39 @@ export default function EnhancedCameraScreen() {
         isActive={true}
         photo={true}
         enableZoomGesture={true}
+        frameProcessor={frameProcessor}
       />
 
-      {/* Document detection overlay */}
-      <View style={styles.overlay}>
-        <View style={styles.detectionFrame}>
-          <View style={[styles.corner, styles.cornerTopLeft]} />
-          <View style={[styles.corner, styles.cornerTopRight]} />
-          <View style={[styles.corner, styles.cornerBottomLeft]} />
-          <View style={[styles.corner, styles.cornerBottomRight]} />
+      {/* Animated document detection overlay */}
+      {detectedCorners && device && (
+        <DocumentDetectionOverlay
+          corners={detectedCorners}
+          isStable={isStable}
+          frameWidth={device.formats[0]?.videoWidth || SCREEN_WIDTH}
+          frameHeight={device.formats[0]?.videoHeight || SCREEN_HEIGHT}
+          viewWidth={SCREEN_WIDTH}
+          viewHeight={SCREEN_HEIGHT}
+        />
+      )}
 
-          {/* Detection hint */}
-          <View style={styles.detectionHintContainer}>
-            <Text style={styles.detectionHint}>
-              {scanMode === 'document' && 'Position document within frame'}
-              {scanMode === 'receipt' && 'Align receipt edges'}
-              {scanMode === 'businessCard' && 'Center business card'}
-              {scanMode === 'whiteboard' && 'Capture entire whiteboard'}
-              {scanMode === 'photo' && 'Take photo'}
-            </Text>
-          </View>
-        </View>
+      {/* Detection status hint */}
+      <View style={styles.detectionHintContainer}>
+        <Text style={[styles.detectionHint, isStable && styles.detectionHintStable]}>
+          {isStable ? '✓ Document ready' : 'Position document in view'}
+        </Text>
       </View>
 
       {/* Top controls */}
       <View style={styles.topControls}>
-        <TouchableOpacity style={styles.iconButton} onPress={toggleFlash}>
-          <Text style={styles.iconButtonText}>
-            {flash === 'off' ? '⚡' : '⚡'}
-          </Text>
-          {flash === 'on' && <View style={styles.activeIndicator} />}
-        </TouchableOpacity>
+        <View style={styles.flashContainer}>
+          <TouchableOpacity style={styles.iconButton} onPress={toggleFlash}>
+            <Text style={styles.iconButtonText}>⚡</Text>
+            {flash !== 'off' && <View style={styles.activeIndicator} />}
+          </TouchableOpacity>
+          {flash !== 'off' && (
+            <Text style={styles.flashLabel}>{flash.toUpperCase()}</Text>
+          )}
+        </View>
 
         <TouchableOpacity
           style={styles.modeButton}
@@ -230,19 +333,35 @@ export default function EnhancedCameraScreen() {
 
       {/* Bottom controls */}
       <View style={styles.bottomControls}>
-        <TouchableOpacity style={styles.iconButton} onPress={toggleCamera}>
-          <Text style={styles.iconButtonText}>🔄</Text>
-        </TouchableOpacity>
+        <View style={styles.leftControl}>
+          <TouchableOpacity style={styles.iconButton} onPress={toggleCamera}>
+            <Text style={styles.iconButtonText}>🔄</Text>
+          </TouchableOpacity>
+        </View>
 
         <TouchableOpacity
-          style={[styles.captureButton, isCapturing && styles.captureButtonDisabled]}
+          style={[
+            styles.captureButton,
+            isCapturing && styles.captureButtonDisabled,
+            isStable && styles.captureButtonReady,
+          ]}
           onPress={handleCapture}
           disabled={isCapturing}
         >
           <View style={styles.captureButtonInner} />
         </TouchableOpacity>
 
-        <View style={styles.iconButton} />
+        <View style={styles.rightControl}>
+          <View style={styles.autoCaptureSwitchContainer}>
+            <Text style={styles.autoCaptureSwitchLabel}>Auto</Text>
+            <Switch
+              value={autoCapture}
+              onValueChange={setAutoCapture}
+              trackColor={{ false: '#767577', true: colors.primary.teal }}
+              thumbColor={autoCapture ? '#fff' : '#f4f3f4'}
+            />
+          </View>
+        </View>
       </View>
 
       {/* Status bar safe area */}
@@ -303,9 +422,9 @@ const styles = StyleSheet.create({
   },
   detectionHintContainer: {
     position: 'absolute',
-    bottom: -40,
-    left: 0,
-    right: 0,
+    top: Platform.OS === 'ios' ? 120 : 100,
+    left: spacing.md,
+    right: spacing.md,
     alignItems: 'center',
   },
   detectionHint: {
@@ -315,6 +434,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     borderRadius: borderRadius.full,
+  },
+  detectionHintStable: {
+    backgroundColor: 'rgba(16, 185, 129, 0.9)',
   },
   topControls: {
     position: 'absolute',
@@ -344,6 +466,15 @@ const styles = StyleSheet.create({
     height: 8,
     borderRadius: 4,
     backgroundColor: colors.primary.teal,
+  },
+  flashContainer: {
+    alignItems: 'center',
+  },
+  flashLabel: {
+    ...typography.caption,
+    color: colors.text.primary.dark,
+    fontSize: 10,
+    marginTop: 2,
   },
   modeButton: {
     flexDirection: 'row',
@@ -417,11 +548,35 @@ const styles = StyleSheet.create({
   captureButtonDisabled: {
     opacity: 0.5,
   },
+  captureButtonReady: {
+    borderColor: colors.status.success,
+  },
   captureButtonInner: {
     width: 64,
     height: 64,
     borderRadius: 32,
     backgroundColor: 'white',
+  },
+  leftControl: {
+    flex: 1,
+    alignItems: 'flex-start',
+  },
+  rightControl: {
+    flex: 1,
+    alignItems: 'flex-end',
+  },
+  autoCaptureSwitchContainer: {
+    flexDirection: 'column',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    borderRadius: borderRadius.md,
+    padding: spacing.xs,
+  },
+  autoCaptureSwitchLabel: {
+    ...typography.caption,
+    color: colors.text.primary.dark,
+    fontSize: 10,
+    marginBottom: 2,
   },
   statusBarSafeArea: {
     position: 'absolute',
@@ -458,10 +613,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xl,
     paddingVertical: spacing.md,
     borderRadius: borderRadius.full,
+    marginBottom: spacing.sm,
   },
   permissionButtonText: {
     ...typography.button,
     color: colors.text.primary.dark,
+  },
+  settingsButton: {
+    backgroundColor: 'rgba(139, 92, 246, 0.8)',
+    paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.md,
+    borderRadius: borderRadius.full,
+  },
+  settingsButtonText: {
+    ...typography.button,
+    color: colors.text.primary.dark,
+    fontSize: 14,
   },
   errorText: {
     ...typography.body,
