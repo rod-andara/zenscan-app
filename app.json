@@ -1,13 +1,13 @@
 {
   "expo": {
-    "name": "Quick Scan",
-    "slug": "quickscan",
+    "name": "ZenScan",
+    "slug": "zenscan",
     "version": "1.0.8",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
-    "scheme": "quickscan",
+    "scheme": "zenscan",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -15,10 +15,10 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.quickscan.app",
+      "bundleIdentifier": "com.zenscan.app",
       "buildNumber": "8",
       "infoPlist": {
-        "NSCameraUsageDescription": "Quick Scan needs camera access to scan and detect documents",
+        "NSCameraUsageDescription": "ZenScan needs camera access to scan and detect documents",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
@@ -34,7 +34,7 @@
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
       ],
-      "package": "com.quickscan.app"
+      "package": "com.zenscan.app"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -44,13 +44,13 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Quick Scan needs camera access to scan documents"
+          "cameraPermission": "ZenScan needs camera access to scan documents"
         }
       ],
       [
         "react-native-vision-camera",
         {
-          "cameraPermissionText": "Quick Scan needs camera access to scan and detect documents",
+          "cameraPermissionText": "ZenScan needs camera access to scan and detect documents",
           "enableCodeScanner": false,
           "enableMicrophonePermission": false
         }
