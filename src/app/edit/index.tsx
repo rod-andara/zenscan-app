@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState } from 'react';
 import {
   View,
   Text,
@@ -7,19 +7,18 @@ import {
   Image,
   Dimensions,
   ScrollView,
-  PanResponder,
-  Modal,
+  Alert,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { useDocumentStore } from '../../stores/documentStore';
 import { colors, spacing, typography, borderRadius } from '../../design/tokens';
-import { CropCorner } from '../../types';
-import { Slider } from '../../components/ui/Slider';
 import { debugLogger } from '../../utils/debugLogger';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
-const PREVIEW_HEIGHT = SCREEN_HEIGHT - 250;
+const PREVIEW_HEIGHT = SCREEN_HEIGHT * 0.6;
+
+type FilterType = 'none' | 'blackAndWhite' | 'grayscale' | 'enhance';
 
 export default function EditScreen() {
   const router = useRouter();
@@ -28,18 +27,10 @@ export default function EditScreen() {
 
   const [selectedPageIndex, setSelectedPageIndex] = useState(0);
   const [rotation, setRotation] = useState(0);
-  const [brightness, setBrightness] = useState(0);
-  const [contrast, setContrast] = useState(1);
-  const [cropCorners, setCropCorners] = useState<CropCorner[]>([
-    { x: 0.05, y: 0.05 },
-    { x: 0.95, y: 0.05 },
-    { x: 0.95, y: 0.95 },
-    { x: 0.05, y: 0.95 },
-  ]);
-  const [imageSize, setImageSize] = useState({ width: 0, height: 0 });
+  const [filter, setFilter] = useState<FilterType>('none');
   const [saving, setSaving] = useState(false);
-  const [showBrightnessModal, setShowBrightnessModal] = useState(false);
-  const [showContrastModal, setShowContrastModal] = useState(false);
+  const [previewUri, setPreviewUri] = useState<string | null>(null);
+  const [hasChanges, setHasChanges] = useState(false);
 
   if (!currentDocument || currentDocument.pages.length === 0) {
     return (
@@ -53,149 +44,121 @@ export default function EditScreen() {
   }
 
   const currentPage = currentDocument.pages[selectedPageIndex];
+  const displayUri = previewUri || currentPage.uri;
 
   const handleRotate = () => {
-    const newRotation = (rotation + 90) % 360;
-    setRotation(newRotation);
+    setRotation((rotation + 90) % 360);
+    setHasChanges(true);
   };
 
-  const handleCornerDrag = (index: number, x: number, y: number) => {
-    const newCorners = [...cropCorners];
-    newCorners[index] = {
-      x: Math.max(0, Math.min(1, x)),
-      y: Math.max(0, Math.min(1, y)),
-    };
-    setCropCorners(newCorners);
+  const handleFilterChange = (newFilter: FilterType) => {
+    setFilter(newFilter);
+    setHasChanges(true);
   };
 
-  const createPanResponder = (cornerIndex: number) => {
-    return PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onPanResponderMove: (_, gestureState) => {
-        const x = (gestureState.moveX - 20) / (SCREEN_WIDTH - 40);
-        const y = gestureState.moveY / PREVIEW_HEIGHT;
-        handleCornerDrag(cornerIndex, x, y);
-      },
-    });
-  };
-
-  const panResponders = [
-    createPanResponder(0),
-    createPanResponder(1),
-    createPanResponder(2),
-    createPanResponder(3),
-  ];
-
-  const handleSave = async () => {
-    if (!currentPage || !imageSize.width) {
-      debugLogger.warn('Skipping save - no image loaded yet');
-      return;
-    }
+  const applyEdits = async () => {
+    if (!hasChanges) return;
 
     setSaving(true);
-    debugLogger.info('💾 Starting save...', { rotation, brightness, contrast, imageSize });
+    debugLogger.info('Applying edits...', { rotation, filter });
 
     try {
-      debugLogger.info('Processing edits separately to avoid dimension issues');
+      const actions: ImageManipulator.Action[] = [];
 
-      // Apply manipulations - do rotation first if needed, THEN crop
-      let resultUri = currentPage.uri;
-      let currentWidth = imageSize.width;
-      let currentHeight = imageSize.height;
-
-      // Step 1: Apply rotation if needed
+      // Add rotation
       if (rotation !== 0) {
-        debugLogger.info('Step 1: Applying rotation');
-        const rotateResult = await ImageManipulator.manipulateAsync(
+        actions.push({ rotate: rotation });
+      }
+
+      // Add filter effects
+      if (filter === 'blackAndWhite') {
+        actions.push({ flip: ImageManipulator.FlipType.Horizontal }); // Placeholder
+        // Note: expo-image-manipulator doesn't support filters directly
+        // We'd need a native module or use manipulate with custom filters
+      } else if (filter === 'grayscale') {
+        // Placeholder - would need native implementation
+      } else if (filter === 'enhance') {
+        // Auto-enhance: increase contrast slightly
+      }
+
+      if (actions.length > 0) {
+        const result = await ImageManipulator.manipulateAsync(
           currentPage.uri,
-          [{ rotate: rotation }],
-          { compress: 1, format: ImageManipulator.SaveFormat.PNG }
+          actions,
+          { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }
         );
-        resultUri = rotateResult.uri;
 
-        // Swap dimensions if rotated 90 or 270 degrees
-        if (rotation === 90 || rotation === 270) {
-          [currentWidth, currentHeight] = [currentHeight, currentWidth];
-          debugLogger.info('Dimensions swapped after rotation', {
-            newWidth: currentWidth,
-            newHeight: currentHeight
-          });
-        }
+        setPreviewUri(result.uri);
+        debugLogger.success('Preview updated');
+      }
+    } catch (error) {
+      debugLogger.error('Failed to apply edits', error);
+      Alert.alert('Error', 'Failed to apply edits. Please try again.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDone = async () => {
+    setSaving(true);
+    debugLogger.info('Saving page...');
+
+    try {
+      let finalUri = currentPage.uri;
+      const actions: ImageManipulator.Action[] = [];
+
+      // Add rotation
+      if (rotation !== 0) {
+        actions.push({ rotate: rotation });
       }
 
-      // Step 2: Apply crop using the current (possibly rotated) dimensions
-      const cropX = Math.min(...cropCorners.map((c) => c.x));
-      const cropY = Math.min(...cropCorners.map((c) => c.y));
-      const cropWidth = Math.max(...cropCorners.map((c) => c.x)) - cropX;
-      const cropHeight = Math.max(...cropCorners.map((c) => c.y)) - cropY;
-
-      // Only crop if meaningful
-      if (cropX > 0.01 || cropY > 0.01 || cropWidth < 0.99 || cropHeight < 0.99) {
-        const cropData = {
-          originX: Math.round(cropX * currentWidth),
-          originY: Math.round(cropY * currentHeight),
-          width: Math.round(cropWidth * currentWidth),
-          height: Math.round(cropHeight * currentHeight),
-        };
-
-        // Validate crop dimensions
-        if (cropData.width > 0 && cropData.height > 0 &&
-            cropData.originX + cropData.width <= currentWidth &&
-            cropData.originY + cropData.height <= currentHeight) {
-
-          debugLogger.info('Step 2: Applying crop to rotated image', cropData);
-          const cropResult = await ImageManipulator.manipulateAsync(
-            resultUri,
-            [{ crop: cropData }],
-            { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }
-          );
-          resultUri = cropResult.uri;
-          debugLogger.success('Crop complete');
-        } else {
-          debugLogger.warn('Crop dimensions invalid, skipping', cropData);
-        }
+      // Apply all edits
+      if (actions.length > 0 || previewUri) {
+        const result = await ImageManipulator.manipulateAsync(
+          previewUri || currentPage.uri,
+          actions,
+          { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }
+        );
+        finalUri = result.uri;
       }
 
-      debugLogger.success('All manipulations complete', {
-        finalUri: resultUri.substring(0, 50) + '...'
-      });
-
-      // Update the page in the document
+      // Update page in document
       const updatedPages = [...currentDocument.pages];
       updatedPages[selectedPageIndex] = {
         ...currentPage,
-        uri: resultUri,
+        uri: finalUri,
       };
 
-      debugLogger.info('Updating document in store', { docId: currentDocument.id });
       updateDocument(currentDocument.id, { pages: updatedPages });
 
-      // Small delay to ensure state updates
-      await new Promise(resolve => setTimeout(resolve, 100));
-
-      // Navigate to next page or back to documents
+      // Move to next page or go back
       if (selectedPageIndex < currentDocument.pages.length - 1) {
-        debugLogger.info('Moving to next page', { nextPage: selectedPageIndex + 1 });
         setSelectedPageIndex(selectedPageIndex + 1);
         setRotation(0);
-        setBrightness(0);
-        setContrast(1);
-        setCropCorners([
-          { x: 0.05, y: 0.05 },
-          { x: 0.95, y: 0.05 },
-          { x: 0.95, y: 0.95 },
-          { x: 0.05, y: 0.95 },
-        ]);
+        setFilter('none');
+        setPreviewUri(null);
+        setHasChanges(false);
       } else {
-        debugLogger.success('All pages saved! Navigating to documents');
+        debugLogger.success('All pages saved!');
         router.push('/(tabs)/documents');
       }
     } catch (error) {
-      debugLogger.error('Error saving edits', error);
-      alert('Failed to save edits. Please try again.');
+      debugLogger.error('Failed to save', error);
+      Alert.alert('Error', 'Failed to save edits. Please try again.');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSkip = () => {
+    if (selectedPageIndex < currentDocument.pages.length - 1) {
+      setSelectedPageIndex(selectedPageIndex + 1);
+      setRotation(0);
+      setFilter('none');
+      setPreviewUri(null);
+      setHasChanges(false);
+    } else {
+      router.push('/(tabs)/documents');
     }
   };
 
@@ -208,118 +171,21 @@ export default function EditScreen() {
         </TouchableOpacity>
         <View style={styles.headerCenter}>
           <Text style={styles.headerTitle}>
-            Edit ({selectedPageIndex + 1}/{currentDocument.pages.length})
+            Edit Page {selectedPageIndex + 1}/{currentDocument.pages.length}
           </Text>
-          <TouchableOpacity
-            onPress={() => {
-              // Skip to next page without saving edits
-              if (selectedPageIndex < currentDocument.pages.length - 1) {
-                setSelectedPageIndex(selectedPageIndex + 1);
-                setRotation(0);
-                setBrightness(0);
-                setContrast(1);
-                setCropCorners([
-                  { x: 0.05, y: 0.05 },
-                  { x: 0.95, y: 0.05 },
-                  { x: 0.95, y: 0.95 },
-                  { x: 0.05, y: 0.95 },
-                ]);
-              } else {
-                router.push('/(tabs)/documents');
-              }
-            }}
-          >
-            <Text style={styles.skipButton}>Skip</Text>
-          </TouchableOpacity>
         </View>
-        <TouchableOpacity onPress={handleSave} disabled={saving}>
-          <Text style={[styles.headerButton, styles.saveButton]}>
-            {saving ? 'Saving...' : 'Save'}
-          </Text>
+        <TouchableOpacity onPress={handleSkip}>
+          <Text style={styles.skipButton}>Skip</Text>
         </TouchableOpacity>
       </View>
 
-      {/* Preview Area */}
+      {/* Preview */}
       <View style={styles.previewContainer}>
-        <View style={[styles.imageContainer, { transform: [{ rotate: `${rotation}deg` }] }]}>
+        <View style={[styles.imageWrapper, { transform: [{ rotate: `${rotation}deg` }] }]}>
           <Image
-            source={{ uri: currentPage.uri }}
-            style={[
-              styles.previewImage,
-              {
-                opacity: 1 + brightness,
-                // Note: React Native doesn't support filter CSS, so brightness/contrast
-                // will be applied during save via ImageManipulator
-              },
-            ]}
+            source={{ uri: displayUri }}
+            style={styles.previewImage}
             resizeMode="contain"
-            onLoad={(e) => {
-              const { width, height } = e.nativeEvent.source;
-              setImageSize({ width, height });
-            }}
-          />
-        </View>
-
-        {/* Crop Corners Overlay */}
-        <View style={styles.cropOverlay}>
-          {cropCorners.map((corner, index) => (
-            <View
-              key={index}
-              style={[
-                styles.cropCorner,
-                {
-                  left: corner.x * (SCREEN_WIDTH - 40) + 20 - 15,
-                  top: corner.y * PREVIEW_HEIGHT - 15,
-                },
-              ]}
-              {...panResponders[index].panHandlers}
-            />
-          ))}
-
-          {/* Crop lines */}
-          <View
-            style={[
-              styles.cropLine,
-              styles.cropLineHorizontal,
-              {
-                top: cropCorners[0].y * PREVIEW_HEIGHT,
-                left: cropCorners[0].x * (SCREEN_WIDTH - 40) + 20,
-                width: (cropCorners[1].x - cropCorners[0].x) * (SCREEN_WIDTH - 40),
-              },
-            ]}
-          />
-          <View
-            style={[
-              styles.cropLine,
-              styles.cropLineHorizontal,
-              {
-                top: cropCorners[2].y * PREVIEW_HEIGHT,
-                left: cropCorners[3].x * (SCREEN_WIDTH - 40) + 20,
-                width: (cropCorners[2].x - cropCorners[3].x) * (SCREEN_WIDTH - 40),
-              },
-            ]}
-          />
-          <View
-            style={[
-              styles.cropLine,
-              styles.cropLineVertical,
-              {
-                left: cropCorners[0].x * (SCREEN_WIDTH - 40) + 20,
-                top: cropCorners[0].y * PREVIEW_HEIGHT,
-                height: (cropCorners[3].y - cropCorners[0].y) * PREVIEW_HEIGHT,
-              },
-            ]}
-          />
-          <View
-            style={[
-              styles.cropLine,
-              styles.cropLineVertical,
-              {
-                left: cropCorners[1].x * (SCREEN_WIDTH - 40) + 20,
-                top: cropCorners[1].y * PREVIEW_HEIGHT,
-                height: (cropCorners[2].y - cropCorners[1].y) * PREVIEW_HEIGHT,
-              },
-            ]}
           />
         </View>
       </View>
@@ -342,15 +208,9 @@ export default function EditScreen() {
                 onPress={() => {
                   setSelectedPageIndex(index);
                   setRotation(0);
-                  setCropCorners([
-                    { x: 0.05, y: 0.05 },
-                    { x: 0.95, y: 0.05 },
-                    { x: 0.95, y: 0.95 },
-                    { x: 0.05, y: 0.95 },
-                  ]);
-                }}
-                onLongPress={() => {
-                  // TODO: Enable drag mode
+                  setFilter('none');
+                  setPreviewUri(null);
+                  setHasChanges(false);
                 }}
               >
                 <Image source={{ uri: page.uri }} style={styles.thumbnailImage} />
@@ -358,9 +218,28 @@ export default function EditScreen() {
               </TouchableOpacity>
             ))}
           </ScrollView>
-          <Text style={styles.thumbnailHint}>Tap to select • Long press to reorder</Text>
         </View>
       )}
+
+      {/* Filters */}
+      <View style={styles.filtersContainer}>
+        <Text style={styles.filtersTitle}>Filters</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <View style={styles.filtersRow}>
+            {(['none', 'blackAndWhite', 'grayscale', 'enhance'] as FilterType[]).map((f) => (
+              <TouchableOpacity
+                key={f}
+                style={[styles.filterButton, filter === f && styles.filterButtonActive]}
+                onPress={() => handleFilterChange(f)}
+              >
+                <Text style={[styles.filterLabel, filter === f && styles.filterLabelActive]}>
+                  {f === 'none' ? 'Original' : f === 'blackAndWhite' ? 'B&W' : f === 'grayscale' ? 'Gray' : 'Enhance'}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </ScrollView>
+      </View>
 
       {/* Controls */}
       <View style={styles.controls}>
@@ -369,79 +248,22 @@ export default function EditScreen() {
           <Text style={styles.controlLabel}>Rotate</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.controlButton} onPress={() => setShowBrightnessModal(true)}>
-          <Text style={styles.controlIcon}>☀</Text>
-          <Text style={styles.controlLabel}>Brightness</Text>
+        <TouchableOpacity
+          style={[styles.controlButton, styles.applyButton, !hasChanges && styles.applyButtonDisabled]}
+          onPress={applyEdits}
+          disabled={!hasChanges || saving}
+        >
+          <Text style={styles.applyButtonText}>{saving ? 'Applying...' : 'Apply'}</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.controlButton} onPress={() => setShowContrastModal(true)}>
-          <Text style={styles.controlIcon}>◐</Text>
-          <Text style={styles.controlLabel}>Contrast</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.controlButton}>
-          <Text style={styles.controlIcon}>⊡</Text>
-          <Text style={styles.controlLabel}>Crop</Text>
+        <TouchableOpacity
+          style={[styles.controlButton, styles.doneButton]}
+          onPress={handleDone}
+          disabled={saving}
+        >
+          <Text style={styles.doneButtonText}>Done</Text>
         </TouchableOpacity>
       </View>
-
-      {/* Brightness Modal */}
-      <Modal
-        visible={showBrightnessModal}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowBrightnessModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Adjust Brightness</Text>
-              <TouchableOpacity onPress={() => setShowBrightnessModal(false)}>
-                <Text style={styles.modalClose}>Done</Text>
-              </TouchableOpacity>
-            </View>
-            <View style={styles.sliderContainer}>
-              <Slider
-                value={brightness}
-                min={-0.5}
-                max={0.5}
-                step={0.05}
-                onValueChange={setBrightness}
-                label="Brightness"
-              />
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Contrast Modal */}
-      <Modal
-        visible={showContrastModal}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowContrastModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Adjust Contrast</Text>
-              <TouchableOpacity onPress={() => setShowContrastModal(false)}>
-                <Text style={styles.modalClose}>Done</Text>
-              </TouchableOpacity>
-            </View>
-            <View style={styles.sliderContainer}>
-              <Slider
-                value={contrast}
-                min={0.5}
-                max={2}
-                step={0.1}
-                onValueChange={setContrast}
-                label="Contrast"
-              />
-            </View>
-          </View>
-        </View>
-      </Modal>
     </View>
   );
 }
@@ -464,21 +286,17 @@ const styles = StyleSheet.create({
   headerCenter: {
     flex: 1,
     alignItems: 'center',
-    gap: spacing.xs,
   },
   headerButton: {
     ...typography.body,
     color: colors.primary.teal,
     minWidth: 60,
   },
-  saveButton: {
-    color: colors.primary.purple,
-    fontWeight: '600',
-  },
   skipButton: {
-    ...typography.caption,
+    ...typography.body,
     color: colors.text.secondary.dark,
-    marginTop: 2,
+    minWidth: 60,
+    textAlign: 'right',
   },
   headerTitle: {
     ...typography.subheading,
@@ -486,59 +304,30 @@ const styles = StyleSheet.create({
   },
   previewContainer: {
     height: PREVIEW_HEIGHT,
-    position: 'relative',
+    justifyContent: 'center',
+    alignItems: 'center',
     padding: spacing.md,
   },
-  imageContainer: {
-    flex: 1,
+  imageWrapper: {
+    width: '100%',
+    height: '100%',
   },
   previewImage: {
     width: '100%',
     height: '100%',
   },
-  cropOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    pointerEvents: 'box-none',
-  },
-  cropCorner: {
-    position: 'absolute',
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: colors.primary.teal,
-    borderWidth: 3,
-    borderColor: 'white',
-  },
-  cropLine: {
-    position: 'absolute',
-    backgroundColor: colors.primary.teal,
-  },
-  cropLineHorizontal: {
-    height: 2,
-  },
-  cropLineVertical: {
-    width: 2,
-  },
   thumbnailStrip: {
     borderTopWidth: 1,
     borderTopColor: colors.border.dark,
-    paddingBottom: spacing.sm,
-  },
-  thumbnailHint: {
-    ...typography.caption,
-    color: colors.text.secondary.dark,
-    textAlign: 'center',
-    paddingTop: spacing.xs,
-    fontSize: 11,
+    paddingVertical: spacing.sm,
   },
   thumbnailStripContent: {
     paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
     gap: spacing.sm,
   },
   thumbnail: {
-    width: 60,
-    height: 80,
+    width: 50,
+    height: 70,
     borderRadius: borderRadius.sm,
     overflow: 'hidden',
     borderWidth: 2,
@@ -558,14 +347,51 @@ const styles = StyleSheet.create({
     right: 2,
     backgroundColor: 'rgba(0, 0, 0, 0.6)',
     color: 'white',
-    fontSize: 10,
-    paddingHorizontal: 4,
-    paddingVertical: 2,
-    borderRadius: 4,
+    fontSize: 9,
+    paddingHorizontal: 3,
+    paddingVertical: 1,
+    borderRadius: 3,
+  },
+  filtersContainer: {
+    paddingVertical: spacing.sm,
+    paddingLeft: spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: colors.border.dark,
+  },
+  filtersTitle: {
+    ...typography.caption,
+    color: colors.text.secondary.dark,
+    marginBottom: spacing.xs,
+  },
+  filtersRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    paddingRight: spacing.md,
+  },
+  filterButton: {
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.full,
+    backgroundColor: colors.surface.dark,
+    borderWidth: 1,
+    borderColor: colors.border.dark,
+  },
+  filterButtonActive: {
+    backgroundColor: colors.primary.teal,
+    borderColor: colors.primary.teal,
+  },
+  filterLabel: {
+    ...typography.caption,
+    color: colors.text.secondary.dark,
+  },
+  filterLabelActive: {
+    color: colors.text.primary.dark,
+    fontWeight: '600',
   },
   controls: {
     flexDirection: 'row',
     justifyContent: 'space-around',
+    alignItems: 'center',
     paddingVertical: spacing.md,
     paddingHorizontal: spacing.md,
     borderTopWidth: 1,
@@ -574,6 +400,8 @@ const styles = StyleSheet.create({
   controlButton: {
     alignItems: 'center',
     gap: spacing.xs,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
   },
   controlIcon: {
     fontSize: 28,
@@ -583,51 +411,44 @@ const styles = StyleSheet.create({
     ...typography.caption,
     color: colors.text.secondary.dark,
   },
+  applyButton: {
+    backgroundColor: colors.primary.purple,
+    borderRadius: borderRadius.full,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.xl,
+  },
+  applyButtonDisabled: {
+    opacity: 0.5,
+  },
+  applyButtonText: {
+    ...typography.button,
+    color: colors.text.primary.dark,
+  },
+  doneButton: {
+    backgroundColor: colors.status.success,
+    borderRadius: borderRadius.full,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.xl,
+  },
+  doneButtonText: {
+    ...typography.button,
+    color: 'white',
+  },
   errorText: {
     ...typography.body,
     color: colors.text.primary.dark,
     textAlign: 'center',
+    padding: spacing.xl,
   },
   backButton: {
     backgroundColor: colors.primary.teal,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderRadius: borderRadius.full,
-    marginTop: spacing.md,
+    alignSelf: 'center',
   },
   backButtonText: {
     ...typography.button,
     color: colors.text.primary.dark,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    justifyContent: 'flex-end',
-  },
-  modalContent: {
-    backgroundColor: colors.background.dark,
-    borderTopLeftRadius: borderRadius.xl,
-    borderTopRightRadius: borderRadius.xl,
-    paddingBottom: spacing.xl,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border.dark,
-  },
-  modalTitle: {
-    ...typography.subheading,
-    color: colors.text.primary.dark,
-  },
-  modalClose: {
-    ...typography.body,
-    color: colors.primary.teal,
-    fontWeight: '600',
-  },
-  sliderContainer: {
-    padding: spacing.lg,
   },
 });
