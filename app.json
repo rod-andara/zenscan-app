@@ -2,7 +2,7 @@
   "expo": {
     "name": "Quick Scan",
     "slug": "quickscan",
-    "version": "1.0.0",
+    "version": "1.0.8",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -16,6 +16,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.quickscan.app",
+      "buildNumber": "8",
       "infoPlist": {
         "NSCameraUsageDescription": "Quick Scan needs camera access to scan documents"
       }
@@ -25,6 +26,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#000000"
       },
+      "versionCode": 8,
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "permissions": [
