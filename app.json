@@ -19,7 +19,6 @@
       "buildNumber": "8",
       "infoPlist": {
         "NSCameraUsageDescription": "ZenScan needs camera access to scan and detect documents",
-        "NSLocationWhenInUseUsageDescription": "ZenScan does not use your location. This permission is required by underlying frameworks but location data is never collected or accessed.",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
@@ -53,7 +52,8 @@
         {
           "cameraPermissionText": "ZenScan needs camera access to scan and detect documents",
           "enableCodeScanner": false,
-          "enableMicrophonePermission": false
+          "enableMicrophonePermission": false,
+          "enableLocation": false
         }
       ]
     ],

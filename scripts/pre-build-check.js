@@ -74,8 +74,7 @@ try {
 
   // Check required iOS permissions
   const requiredPermissions = [
-    'NSCameraUsageDescription',
-    'NSLocationWhenInUseUsageDescription'
+    'NSCameraUsageDescription'
   ];
 
   requiredPermissions.forEach(permission => {
