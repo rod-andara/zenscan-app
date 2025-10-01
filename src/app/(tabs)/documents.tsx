@@ -53,25 +53,40 @@ export default function DocumentsScreen() {
         numColumns={numColumns}
         contentContainerStyle={styles.grid}
         keyExtractor={(item) => item.id}
-        renderItem={({ item }) => (
-          <TouchableOpacity style={styles.card}>
-            <View style={styles.thumbnail}>
-              {item.pages[0]?.uri ? (
-                <Image source={{ uri: item.pages[0].uri }} style={styles.thumbnailImage} />
-              ) : (
-                <View style={styles.placeholderThumbnail}>
-                  <Text style={styles.placeholderIcon}>📄</Text>
-                </View>
-              )}
-            </View>
-            <View style={styles.cardInfo}>
-              <Text style={styles.cardTitle} numberOfLines={1}>
-                {item.title}
-              </Text>
-              <Text style={styles.cardPages}>{item.pages.length} pages</Text>
-            </View>
-          </TouchableOpacity>
-        )}
+        renderItem={({ item }) => {
+          const setCurrentDocument = useDocumentStore.getState().setCurrentDocument;
+
+          return (
+            <TouchableOpacity
+              style={styles.card}
+              onPress={() => {
+                setCurrentDocument(item);
+                router.push(`/document/${item.id}`);
+              }}
+            >
+              <View style={styles.thumbnail}>
+                {item.pages[0]?.uri ? (
+                  <Image source={{ uri: item.pages[0].uri }} style={styles.thumbnailImage} />
+                ) : (
+                  <View style={styles.placeholderThumbnail}>
+                    <Text style={styles.placeholderIcon}>📄</Text>
+                  </View>
+                )}
+                {item.pages.length > 1 && (
+                  <View style={styles.pageCountBadge}>
+                    <Text style={styles.pageCountText}>{item.pages.length}</Text>
+                  </View>
+                )}
+              </View>
+              <View style={styles.cardInfo}>
+                <Text style={styles.cardTitle} numberOfLines={1}>
+                  {item.title}
+                </Text>
+                <Text style={styles.cardPages}>{item.pages.length} {item.pages.length === 1 ? 'page' : 'pages'}</Text>
+              </View>
+            </TouchableOpacity>
+          );
+        }}
       />
     </View>
   );
@@ -110,6 +125,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: 'hidden',
     marginBottom: spacing.sm,
+    position: 'relative',
   },
   thumbnailImage: {
     width: '100%',
@@ -122,6 +138,23 @@ const styles = StyleSheet.create({
   },
   placeholderIcon: {
     fontSize: 48,
+  },
+  pageCountBadge: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    backgroundColor: colors.primary.teal,
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    minWidth: 24,
+    alignItems: 'center',
+  },
+  pageCountText: {
+    ...typography.caption,
+    color: colors.text.primary.dark,
+    fontSize: 12,
+    fontWeight: '600',
   },
   cardInfo: {
     paddingHorizontal: spacing.xs,
