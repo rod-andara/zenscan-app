@@ -1,84 +1,105 @@
-import { useState, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
   Platform,
+  Dimensions,
   Alert,
-  Linking,
 } from 'react-native';
+import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
 import { useRouter } from 'expo-router';
-import DocumentScanner from 'react-native-document-scanner-plugin';
 import { colors, spacing, typography, borderRadius } from '../../design/tokens';
 import { useDocumentStore } from '../../stores/documentStore';
 import { debugLogger } from '../../utils/debugLogger';
-import { ScanMode } from '../../utils/documentDetection';
+import { ScanMode, detectDocumentEdges, DetectedDocument } from '../../utils/documentDetection';
 import { Document, Page } from '../../types';
 
-const SCAN_MODES: { id: ScanMode; label: string; icon: string; description: string }[] = [
-  { id: 'document', label: 'Document', icon: '📄', description: 'Scan documents with auto edge detection' },
-  { id: 'receipt', label: 'Receipt', icon: '🧾', description: 'Scan receipts and invoices' },
-  { id: 'businessCard', label: 'Card', icon: '💳', description: 'Scan business cards' },
-  { id: 'whiteboard', label: 'Board', icon: '📋', description: 'Scan whiteboards and notes' },
-  { id: 'photo', label: 'Photo', icon: '📷', description: 'Take regular photos' },
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+
+const SCAN_MODES: { id: ScanMode; label: string; icon: string }[] = [
+  { id: 'document', label: 'Document', icon: '📄' },
+  { id: 'receipt', label: 'Receipt', icon: '🧾' },
+  { id: 'businessCard', label: 'Card', icon: '💳' },
+  { id: 'whiteboard', label: 'Board', icon: '📋' },
+  { id: 'photo', label: 'Photo', icon: '📷' },
 ];
 
-export default function DocumentScannerScreen() {
+export default function CameraScreen() {
   const router = useRouter();
+  const cameraRef = useRef<Camera>(null);
+
   const [scanMode, setScanMode] = useState<ScanMode>('document');
+  const [isCapturing, setIsCapturing] = useState(false);
+  const [flash, setFlash] = useState<'off' | 'on'>('off');
+  const [detectedDoc, setDetectedDoc] = useState<DetectedDocument | null>(null);
   const [showModeSelector, setShowModeSelector] = useState(false);
-  const [isScanning, setIsScanning] = useState(false);
+
+  const { hasPermission, requestPermission } = useCameraPermission();
+  const device = useCameraDevice('back');
 
   const addDocument = useDocumentStore((state) => state.addDocument);
   const setCurrentDocument = useDocumentStore((state) => state.setCurrentDocument);
 
-  const handleScanDocument = useCallback(async () => {
-    if (isScanning) return;
+  useEffect(() => {
+    if (!hasPermission) {
+      requestPermission();
+    }
+  }, [hasPermission]);
 
-    setIsScanning(true);
-    debugLogger.info('📸 Starting document scanner', { scanMode });
+  // Simulate edge detection every 500ms (simple mock - not using frame processors)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      // Mock detection with random confidence
+      const mockConfidence = 0.5 + Math.random() * 0.5;
+      const detected = detectDocumentEdges(SCREEN_WIDTH, SCREEN_HEIGHT);
+      setDetectedDoc({ ...detected, confidence: mockConfidence });
+    }, 500);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleCapture = useCallback(async () => {
+    if (!cameraRef.current || isCapturing) {
+      debugLogger.warn('Camera not ready or already capturing');
+      return;
+    }
+
+    setIsCapturing(true);
+    debugLogger.info('📸 Capturing photo');
 
     try {
-      // Scan document with native scanner
-      const { scannedImages } = await DocumentScanner.scanDocument({
-        maxNumDocuments: scanMode === 'document' ? 5 : 1, // Allow multi-page for documents
-        croppedImageQuality: 100, // Highest quality
-        responseType: 'imageFilePath' as any, // Get file paths
+      const photo = await cameraRef.current.takePhoto({
+        flash: flash,
+        enableShutterSound: true,
       });
 
-      if (!scannedImages || scannedImages.length === 0) {
-        debugLogger.warn('No images scanned');
-        return;
-      }
-
-      debugLogger.success('Document scanned', {
-        numPages: scannedImages.length,
-        scanMode,
+      debugLogger.success('Photo captured', {
+        width: photo.width,
+        height: photo.height,
+        path: photo.path.substring(0, 50) + '...',
       });
 
-      // Create pages from scanned images
-      const pages: Page[] = scannedImages.map((imagePath, index) => ({
-        id: `${Date.now()}-${index}`,
-        uri: imagePath,
-        originalUri: imagePath,
-        width: 0, // Will be determined in edit screen
-        height: 0,
-        order: index,
-      }));
+      const newPage: Page = {
+        id: Date.now().toString(),
+        uri: `file://${photo.path}`,
+        originalUri: `file://${photo.path}`,
+        width: photo.width,
+        height: photo.height,
+        order: 0,
+      };
 
-      // Create new document
       const newDocument: Document = {
         id: Date.now().toString(),
         title: `${SCAN_MODES.find((m) => m.id === scanMode)?.label} ${new Date().toLocaleDateString()}`,
-        pages,
+        pages: [newPage],
         createdAt: new Date(),
         updatedAt: new Date(),
       };
 
       debugLogger.info('Creating document', {
         id: newDocument.id,
-        pages: pages.length,
         scanMode,
       });
 
@@ -87,101 +108,164 @@ export default function DocumentScannerScreen() {
 
       // Navigate to edit screen
       router.push('/edit/');
-    } catch (error: any) {
-      if (error.message === 'User canceled') {
-        debugLogger.info('User canceled scan');
-        return;
-      }
-
-      debugLogger.error('Failed to scan document', error);
-      Alert.alert('Error', 'Failed to scan document. Please try again.');
+    } catch (error) {
+      debugLogger.error('Failed to capture photo', error);
+      Alert.alert('Error', 'Failed to capture photo. Please try again.');
     } finally {
-      setIsScanning(false);
+      setIsCapturing(false);
     }
-  }, [scanMode, isScanning, addDocument, setCurrentDocument, router]);
+  }, [flash, isCapturing, scanMode, addDocument, setCurrentDocument, router]);
 
-  const openSettings = useCallback(() => {
-    Linking.openSettings();
-  }, []);
+  if (!hasPermission) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.permissionContainer}>
+          <Text style={styles.permissionText}>Camera permission is required</Text>
+          <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
+            <Text style={styles.permissionButtonText}>Grant Permission</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
+  if (!device) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.errorText}>No camera device found</Text>
+      </View>
+    );
+  }
+
+  const isWellAligned = detectedDoc && detectedDoc.confidence > 0.75;
+  const qualityPercentage = detectedDoc ? Math.round(detectedDoc.confidence * 100) : 0;
 
   return (
     <View style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>ZenScan</Text>
-        <Text style={styles.headerSubtitle}>Native Document Scanner</Text>
+      {/* Camera View */}
+      <Camera
+        ref={cameraRef}
+        style={StyleSheet.absoluteFill}
+        device={device}
+        isActive={true}
+        photo={true}
+      />
+
+      {/* Edge Detection Overlay */}
+      {detectedDoc && (
+        <View style={StyleSheet.absoluteFill} pointerEvents="none">
+          {/* Document border */}
+          <View
+            style={[
+              styles.detectionBorder,
+              {
+                borderColor: isWellAligned ? colors.status.success : colors.primary.teal,
+                borderWidth: isWellAligned ? 4 : 2,
+                left: detectedDoc.corners[0].x * 0.8,
+                top: detectedDoc.corners[0].y * 0.7,
+                width: (detectedDoc.corners[1].x - detectedDoc.corners[0].x) * 0.8,
+                height: (detectedDoc.corners[3].y - detectedDoc.corners[0].y) * 0.7,
+              },
+            ]}
+          />
+
+          {/* Corner markers */}
+          {detectedDoc.corners.map((corner, index) => (
+            <View
+              key={index}
+              style={[
+                styles.cornerMarker,
+                {
+                  left: corner.x * 0.8 - 8,
+                  top: corner.y * 0.7 - 8,
+                  backgroundColor: isWellAligned ? colors.status.success : colors.primary.teal,
+                },
+              ]}
+            />
+          ))}
+        </View>
+      )}
+
+      {/* Top Header */}
+      <View style={styles.topBar}>
+        <TouchableOpacity
+          style={styles.topButton}
+          onPress={() => setFlash(flash === 'off' ? 'on' : 'off')}
+        >
+          <Text style={styles.topButtonText}>{flash === 'off' ? '⚡ Off' : '⚡ On'}</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.topButton}
+          onPress={() => router.push('/(tabs)/documents')}
+        >
+          <Text style={styles.topButtonText}>📁 Docs</Text>
+        </TouchableOpacity>
       </View>
 
-      {/* Scan mode selector */}
-      <View style={styles.content}>
-        <Text style={styles.sectionTitle}>Select Scan Mode</Text>
+      {/* Quality Indicator */}
+      <View style={styles.qualityContainer}>
+        <Text style={styles.qualityText}>Alignment Quality</Text>
+        <View style={styles.qualityBarContainer}>
+          <View
+            style={[
+              styles.qualityBar,
+              {
+                width: `${qualityPercentage}%`,
+                backgroundColor:
+                  qualityPercentage > 75
+                    ? colors.status.success
+                    : qualityPercentage > 50
+                    ? colors.status.warning
+                    : colors.status.error,
+              },
+            ]}
+          />
+        </View>
+        <Text style={styles.qualityPercentage}>{qualityPercentage}%</Text>
+      </View>
 
-        <View style={styles.modesGrid}>
+      {/* Scan Mode Selector */}
+      <View style={styles.modeContainer}>
+        <View style={styles.modeButtons}>
           {SCAN_MODES.map((mode) => (
             <TouchableOpacity
               key={mode.id}
               style={[
-                styles.modeCard,
-                scanMode === mode.id && styles.modeCardActive,
+                styles.modeButton,
+                scanMode === mode.id && styles.modeButtonActive,
               ]}
               onPress={() => setScanMode(mode.id)}
             >
-              <Text style={styles.modeCardIcon}>{mode.icon}</Text>
+              <Text style={styles.modeIcon}>{mode.icon}</Text>
               <Text style={[
-                styles.modeCardLabel,
-                scanMode === mode.id && styles.modeCardLabelActive,
+                styles.modeLabel,
+                scanMode === mode.id && styles.modeLabelActive,
               ]}>
                 {mode.label}
               </Text>
-              <Text style={styles.modeCardDescription}>{mode.description}</Text>
             </TouchableOpacity>
           ))}
         </View>
-
-        {/* Scan button */}
-        <TouchableOpacity
-          style={[styles.scanButton, isScanning && styles.scanButtonDisabled]}
-          onPress={handleScanDocument}
-          disabled={isScanning}
-        >
-          <Text style={styles.scanButtonIcon}>📸</Text>
-          <Text style={styles.scanButtonText}>
-            {isScanning ? 'Scanning...' : `Scan ${SCAN_MODES.find((m) => m.id === scanMode)?.label}`}
-          </Text>
-        </TouchableOpacity>
-
-        {/* Features list */}
-        <View style={styles.featuresContainer}>
-          <Text style={styles.featuresTitle}>Features:</Text>
-          <View style={styles.featureRow}>
-            <Text style={styles.featureIcon}>✓</Text>
-            <Text style={styles.featureText}>Automatic edge detection</Text>
-          </View>
-          <View style={styles.featureRow}>
-            <Text style={styles.featureIcon}>✓</Text>
-            <Text style={styles.featureText}>Perspective correction</Text>
-          </View>
-          <View style={styles.featureRow}>
-            <Text style={styles.featureIcon}>✓</Text>
-            <Text style={styles.featureText}>Multi-page scanning</Text>
-          </View>
-          <View style={styles.featureRow}>
-            <Text style={styles.featureIcon}>✓</Text>
-            <Text style={styles.featureText}>High quality output</Text>
-          </View>
-        </View>
-
-        {/* Documents button */}
-        <TouchableOpacity
-          style={styles.documentsButton}
-          onPress={() => router.push('/(tabs)/documents')}
-        >
-          <Text style={styles.documentsButtonText}>📁 View Documents</Text>
-        </TouchableOpacity>
       </View>
 
-      {/* Status bar safe area */}
-      <View style={styles.statusBarSafeArea} />
+      {/* Capture Button */}
+      <View style={styles.captureContainer}>
+        <TouchableOpacity
+          style={[
+            styles.captureButton,
+            isWellAligned && styles.captureButtonReady,
+            isCapturing && styles.captureButtonDisabled,
+          ]}
+          onPress={handleCapture}
+          disabled={isCapturing}
+        >
+          <View style={styles.captureButtonInner} />
+        </TouchableOpacity>
+        {isWellAligned && (
+          <Text style={styles.captureHint}>✓ Ready to scan</Text>
+        )}
+      </View>
     </View>
   );
 }
@@ -189,146 +273,171 @@ export default function DocumentScannerScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.background.dark,
+    backgroundColor: '#000',
   },
-  statusBarSafeArea: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: Platform.OS === 'ios' ? 44 : 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.3)',
-  },
-  header: {
-    paddingTop: Platform.OS === 'ios' ? 60 : 40,
-    paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.lg,
-    backgroundColor: colors.primary.teal,
-  },
-  headerTitle: {
-    ...typography.heading,
-    fontSize: 32,
-    color: colors.text.primary.dark,
-    marginBottom: spacing.xs,
-  },
-  headerSubtitle: {
-    ...typography.body,
-    color: 'rgba(255, 255, 255, 0.9)',
-    fontSize: 14,
-  },
-  content: {
+  permissionContainer: {
     flex: 1,
-    padding: spacing.lg,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.xl,
   },
-  sectionTitle: {
-    ...typography.heading,
-    fontSize: 20,
+  permissionText: {
+    ...typography.body,
     color: colors.text.primary.dark,
     marginBottom: spacing.md,
-  },
-  modesGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.md,
-    marginBottom: spacing.xl,
-  },
-  modeCard: {
-    flex: 1,
-    minWidth: '45%',
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-    padding: spacing.md,
-    borderRadius: borderRadius.lg,
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: 'transparent',
-  },
-  modeCardActive: {
-    backgroundColor: 'rgba(20, 184, 166, 0.2)',
-    borderColor: colors.primary.teal,
-  },
-  modeCardIcon: {
-    fontSize: 40,
-    marginBottom: spacing.sm,
-  },
-  modeCardLabel: {
-    ...typography.button,
-    color: colors.text.primary.dark,
-    fontSize: 16,
-    marginBottom: spacing.xs,
-  },
-  modeCardLabelActive: {
-    color: colors.primary.teal,
-  },
-  modeCardDescription: {
-    ...typography.caption,
-    color: colors.text.secondary.dark,
     textAlign: 'center',
-    fontSize: 11,
   },
-  scanButton: {
+  permissionButton: {
     backgroundColor: colors.primary.teal,
-    paddingVertical: spacing.lg,
-    paddingHorizontal: spacing.xl,
-    borderRadius: borderRadius.full,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.sm,
-    marginBottom: spacing.xl,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
-  },
-  scanButtonDisabled: {
-    opacity: 0.5,
-  },
-  scanButtonIcon: {
-    fontSize: 24,
-  },
-  scanButtonText: {
-    ...typography.button,
-    color: colors.text.primary.dark,
-    fontSize: 18,
-  },
-  featuresContainer: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    padding: spacing.md,
-    borderRadius: borderRadius.lg,
-    marginBottom: spacing.lg,
-  },
-  featuresTitle: {
-    ...typography.button,
-    color: colors.text.primary.dark,
-    fontSize: 14,
-    marginBottom: spacing.sm,
-  },
-  featureRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: spacing.xs,
-  },
-  featureIcon: {
-    color: colors.primary.teal,
-    marginRight: spacing.sm,
-    fontSize: 14,
-  },
-  featureText: {
-    ...typography.body,
-    color: colors.text.secondary.dark,
-    fontSize: 14,
-  },
-  documentsButton: {
-    backgroundColor: 'rgba(139, 92, 246, 0.8)',
     paddingVertical: spacing.md,
     paddingHorizontal: spacing.xl,
     borderRadius: borderRadius.full,
-    alignItems: 'center',
   },
-  documentsButtonText: {
+  permissionButtonText: {
     ...typography.button,
     color: colors.text.primary.dark,
-    fontSize: 16,
+  },
+  errorText: {
+    ...typography.body,
+    color: colors.text.primary.dark,
+    textAlign: 'center',
+    padding: spacing.xl,
+  },
+  topBar: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 50 : 20,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.md,
+  },
+  topButton: {
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.full,
+  },
+  topButtonText: {
+    ...typography.button,
+    color: 'white',
+    fontSize: 14,
+  },
+  detectionBorder: {
+    position: 'absolute',
+    borderRadius: borderRadius.md,
+  },
+  cornerMarker: {
+    position: 'absolute',
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: 'white',
+  },
+  qualityContainer: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 110 : 80,
+    left: spacing.lg,
+    right: spacing.lg,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    padding: spacing.md,
+    borderRadius: borderRadius.lg,
+  },
+  qualityText: {
+    ...typography.caption,
+    color: 'white',
+    marginBottom: spacing.xs,
+    textAlign: 'center',
+  },
+  qualityBarContainer: {
+    height: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 4,
+    overflow: 'hidden',
+    marginBottom: spacing.xs,
+  },
+  qualityBar: {
+    height: '100%',
+    borderRadius: 4,
+  },
+  qualityPercentage: {
+    ...typography.caption,
+    color: 'white',
+    textAlign: 'center',
+    fontSize: 12,
+  },
+  modeContainer: {
+    position: 'absolute',
+    bottom: 140,
+    left: 0,
+    right: 0,
+    paddingHorizontal: spacing.md,
+  },
+  modeButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    borderRadius: borderRadius.full,
+    padding: spacing.xs,
+  },
+  modeButton: {
+    alignItems: 'center',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.sm,
+    borderRadius: borderRadius.full,
+    minWidth: 60,
+  },
+  modeButtonActive: {
+    backgroundColor: 'rgba(20, 184, 166, 0.3)',
+  },
+  modeIcon: {
+    fontSize: 20,
+    marginBottom: 2,
+  },
+  modeLabel: {
+    ...typography.caption,
+    color: 'rgba(255, 255, 255, 0.7)',
+    fontSize: 10,
+  },
+  modeLabelActive: {
+    color: colors.primary.teal,
+    fontWeight: '600',
+  },
+  captureContainer: {
+    position: 'absolute',
+    bottom: 40,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+  },
+  captureButton: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 4,
+    borderColor: 'white',
+  },
+  captureButtonReady: {
+    borderColor: colors.status.success,
+    backgroundColor: 'rgba(34, 197, 94, 0.2)',
+  },
+  captureButtonDisabled: {
+    opacity: 0.5,
+  },
+  captureButtonInner: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: 'white',
+  },
+  captureHint: {
+    ...typography.caption,
+    color: colors.status.success,
+    marginTop: spacing.sm,
+    fontWeight: '600',
   },
 });
