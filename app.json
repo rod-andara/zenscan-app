@@ -54,7 +54,7 @@
           "enableCodeScanner": false,
           "enableMicrophonePermission": false,
           "enableLocation": false,
-          "enableFrameProcessors": true
+          "enableFrameProcessors": false
         }
       ],
       [
