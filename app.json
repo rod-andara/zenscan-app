@@ -56,6 +56,12 @@
           "enableLocation": false,
           "enableFrameProcessors": false
         }
+      ],
+      [
+        "react-native-document-scanner-plugin",
+        {
+          "cameraPermission": "Allow ZenScan to scan documents with automatic edge detection"
+        }
       ]
     ],
     "extra": {

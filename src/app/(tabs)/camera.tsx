@@ -1,93 +1,84 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
-  Dimensions,
   Platform,
   Alert,
   Linking,
 } from 'react-native';
-import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
 import { useRouter } from 'expo-router';
+import DocumentScanner from 'react-native-document-scanner-plugin';
 import { colors, spacing, typography, borderRadius } from '../../design/tokens';
 import { useDocumentStore } from '../../stores/documentStore';
 import { debugLogger } from '../../utils/debugLogger';
 import { ScanMode } from '../../utils/documentDetection';
 import { Document, Page } from '../../types';
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
-
-const SCAN_MODES: { id: ScanMode; label: string; icon: string }[] = [
-  { id: 'document', label: 'Document', icon: '📄' },
-  { id: 'receipt', label: 'Receipt', icon: '🧾' },
-  { id: 'businessCard', label: 'Card', icon: '💳' },
-  { id: 'whiteboard', label: 'Board', icon: '📋' },
-  { id: 'photo', label: 'Photo', icon: '📷' },
+const SCAN_MODES: { id: ScanMode; label: string; icon: string; description: string }[] = [
+  { id: 'document', label: 'Document', icon: '📄', description: 'Scan documents with auto edge detection' },
+  { id: 'receipt', label: 'Receipt', icon: '🧾', description: 'Scan receipts and invoices' },
+  { id: 'businessCard', label: 'Card', icon: '💳', description: 'Scan business cards' },
+  { id: 'whiteboard', label: 'Board', icon: '📋', description: 'Scan whiteboards and notes' },
+  { id: 'photo', label: 'Photo', icon: '📷', description: 'Take regular photos' },
 ];
 
-export default function SimpleCameraScreen() {
+export default function DocumentScannerScreen() {
   const router = useRouter();
-  const cameraRef = useRef<Camera>(null);
-
-  const [cameraPosition, setCameraPosition] = useState<'back' | 'front'>('back');
-  const [flash, setFlash] = useState<'off' | 'on' | 'auto'>('off');
   const [scanMode, setScanMode] = useState<ScanMode>('document');
-  const [isCapturing, setIsCapturing] = useState(false);
   const [showModeSelector, setShowModeSelector] = useState(false);
-
-  const { hasPermission, requestPermission } = useCameraPermission();
-  const device = useCameraDevice(cameraPosition);
+  const [isScanning, setIsScanning] = useState(false);
 
   const addDocument = useDocumentStore((state) => state.addDocument);
   const setCurrentDocument = useDocumentStore((state) => state.setCurrentDocument);
 
-  useEffect(() => {
-    if (!hasPermission) {
-      requestPermission();
-    }
-  }, [hasPermission]);
+  const handleScanDocument = useCallback(async () => {
+    if (isScanning) return;
 
-  const handleCapture = useCallback(async () => {
-    if (!cameraRef.current || isCapturing) {
-      debugLogger.warn('Camera not ready or already capturing');
-      return;
-    }
-
-    setIsCapturing(true);
-    debugLogger.info('📸 Capturing photo with Vision Camera');
+    setIsScanning(true);
+    debugLogger.info('📸 Starting document scanner', { scanMode });
 
     try {
-      const photo = await cameraRef.current.takePhoto({
-        flash: flash,
+      // Scan document with native scanner
+      const { scannedImages } = await DocumentScanner.scanDocument({
+        maxNumDocuments: scanMode === 'document' ? 5 : 1, // Allow multi-page for documents
+        croppedImageQuality: 100, // Highest quality
+        responseType: 'imageFilePath' as any, // Get file paths
       });
 
-      debugLogger.success('Photo captured', {
-        width: photo.width,
-        height: photo.height,
-        path: photo.path.substring(0, 50) + '...',
+      if (!scannedImages || scannedImages.length === 0) {
+        debugLogger.warn('No images scanned');
+        return;
+      }
+
+      debugLogger.success('Document scanned', {
+        numPages: scannedImages.length,
+        scanMode,
       });
 
-      const newPage: Page = {
-        id: Date.now().toString(),
-        uri: `file://${photo.path}`,
-        originalUri: `file://${photo.path}`,
-        width: photo.width,
-        height: photo.height,
-        order: 0,
-      };
+      // Create pages from scanned images
+      const pages: Page[] = scannedImages.map((imagePath, index) => ({
+        id: `${Date.now()}-${index}`,
+        uri: imagePath,
+        originalUri: imagePath,
+        width: 0, // Will be determined in edit screen
+        height: 0,
+        order: index,
+      }));
 
+      // Create new document
       const newDocument: Document = {
         id: Date.now().toString(),
         title: `${SCAN_MODES.find((m) => m.id === scanMode)?.label} ${new Date().toLocaleDateString()}`,
-        pages: [newPage],
+        pages,
         createdAt: new Date(),
         updatedAt: new Date(),
       };
 
       debugLogger.info('Creating document', {
         id: newDocument.id,
+        pages: pages.length,
         scanMode,
       });
 
@@ -96,154 +87,97 @@ export default function SimpleCameraScreen() {
 
       // Navigate to edit screen
       router.push('/edit/');
-    } catch (error) {
-      debugLogger.error('Failed to capture photo', error);
-      Alert.alert('Error', 'Failed to capture photo. Please try again.');
+    } catch (error: any) {
+      if (error.message === 'User canceled') {
+        debugLogger.info('User canceled scan');
+        return;
+      }
+
+      debugLogger.error('Failed to scan document', error);
+      Alert.alert('Error', 'Failed to scan document. Please try again.');
     } finally {
-      setIsCapturing(false);
+      setIsScanning(false);
     }
-  }, [flash, scanMode, isCapturing, addDocument, setCurrentDocument, router]);
-
-  const toggleFlash = useCallback(() => {
-    setFlash((current) => {
-      if (current === 'off') return 'auto';
-      if (current === 'auto') return 'on';
-      return 'off';
-    });
-  }, []);
-
-  const toggleCamera = useCallback(() => {
-    setCameraPosition((current) => (current === 'back' ? 'front' : 'back'));
-  }, []);
-
-  const handleNavigateToDocuments = useCallback(() => {
-    router.push('/(tabs)/documents');
-  }, [router]);
+  }, [scanMode, isScanning, addDocument, setCurrentDocument, router]);
 
   const openSettings = useCallback(() => {
     Linking.openSettings();
   }, []);
 
-  if (!hasPermission) {
-    return (
-      <View style={styles.container}>
-        <View style={styles.permissionContainer}>
-          <Text style={styles.permissionIcon}>📷</Text>
-          <Text style={styles.permissionTitle}>Camera Permission Required</Text>
-          <Text style={styles.permissionText}>
-            ZenScan needs camera access to scan documents
-          </Text>
-          <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
-            <Text style={styles.permissionButtonText}>Grant Camera Access</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.settingsButton} onPress={openSettings}>
-            <Text style={styles.settingsButtonText}>Open Settings</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    );
-  }
-
-  if (!device) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.errorText}>No camera device found</Text>
-      </View>
-    );
-  }
-
   return (
     <View style={styles.container}>
-      <Camera
-        ref={cameraRef}
-        style={StyleSheet.absoluteFill}
-        device={device}
-        isActive={true}
-        photo={true}
-        enableZoomGesture={true}
-        enableLocation={false}
-      />
-
-      {/* Detection status hint */}
-      <View style={styles.detectionHintContainer}>
-        <Text style={styles.detectionHint}>
-          Position document in view and tap capture
-        </Text>
-      </View>
-
-      {/* Top controls */}
-      <View style={styles.topControls}>
-        <View style={styles.flashContainer}>
-          <TouchableOpacity style={styles.iconButton} onPress={toggleFlash}>
-            <Text style={styles.iconButtonText}>⚡</Text>
-            {flash !== 'off' && <View style={styles.activeIndicator} />}
-          </TouchableOpacity>
-          {flash !== 'off' && (
-            <Text style={styles.flashLabel}>{flash.toUpperCase()}</Text>
-          )}
-        </View>
-
-        <TouchableOpacity
-          style={styles.modeButton}
-          onPress={() => setShowModeSelector(!showModeSelector)}
-        >
-          <Text style={styles.modeButtonIcon}>
-            {SCAN_MODES.find((m) => m.id === scanMode)?.icon}
-          </Text>
-          <Text style={styles.modeButtonText}>
-            {SCAN_MODES.find((m) => m.id === scanMode)?.label}
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.iconButton} onPress={handleNavigateToDocuments}>
-          <Text style={styles.iconButtonText}>📁</Text>
-        </TouchableOpacity>
+      {/* Header */}
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>ZenScan</Text>
+        <Text style={styles.headerSubtitle}>Native Document Scanner</Text>
       </View>
 
       {/* Scan mode selector */}
-      {showModeSelector && (
-        <View style={styles.modeSelectorContainer}>
+      <View style={styles.content}>
+        <Text style={styles.sectionTitle}>Select Scan Mode</Text>
+
+        <View style={styles.modesGrid}>
           {SCAN_MODES.map((mode) => (
             <TouchableOpacity
               key={mode.id}
               style={[
-                styles.modeOption,
-                scanMode === mode.id && styles.modeOptionActive,
+                styles.modeCard,
+                scanMode === mode.id && styles.modeCardActive,
               ]}
-              onPress={() => {
-                setScanMode(mode.id);
-                setShowModeSelector(false);
-              }}
+              onPress={() => setScanMode(mode.id)}
             >
-              <Text style={styles.modeOptionIcon}>{mode.icon}</Text>
-              <Text style={styles.modeOptionText}>{mode.label}</Text>
+              <Text style={styles.modeCardIcon}>{mode.icon}</Text>
+              <Text style={[
+                styles.modeCardLabel,
+                scanMode === mode.id && styles.modeCardLabelActive,
+              ]}>
+                {mode.label}
+              </Text>
+              <Text style={styles.modeCardDescription}>{mode.description}</Text>
             </TouchableOpacity>
           ))}
         </View>
-      )}
 
-      {/* Bottom controls */}
-      <View style={styles.bottomControls}>
-        <View style={styles.leftControl}>
-          <TouchableOpacity style={styles.iconButton} onPress={toggleCamera}>
-            <Text style={styles.iconButtonText}>🔄</Text>
-          </TouchableOpacity>
-        </View>
-
+        {/* Scan button */}
         <TouchableOpacity
-          style={[
-            styles.captureButton,
-            isCapturing && styles.captureButtonDisabled,
-          ]}
-          onPress={handleCapture}
-          disabled={isCapturing}
+          style={[styles.scanButton, isScanning && styles.scanButtonDisabled]}
+          onPress={handleScanDocument}
+          disabled={isScanning}
         >
-          <View style={styles.captureButtonInner} />
+          <Text style={styles.scanButtonIcon}>📸</Text>
+          <Text style={styles.scanButtonText}>
+            {isScanning ? 'Scanning...' : `Scan ${SCAN_MODES.find((m) => m.id === scanMode)?.label}`}
+          </Text>
         </TouchableOpacity>
 
-        <View style={styles.rightControl}>
-          {/* Space for future controls */}
+        {/* Features list */}
+        <View style={styles.featuresContainer}>
+          <Text style={styles.featuresTitle}>Features:</Text>
+          <View style={styles.featureRow}>
+            <Text style={styles.featureIcon}>✓</Text>
+            <Text style={styles.featureText}>Automatic edge detection</Text>
+          </View>
+          <View style={styles.featureRow}>
+            <Text style={styles.featureIcon}>✓</Text>
+            <Text style={styles.featureText}>Perspective correction</Text>
+          </View>
+          <View style={styles.featureRow}>
+            <Text style={styles.featureIcon}>✓</Text>
+            <Text style={styles.featureText}>Multi-page scanning</Text>
+          </View>
+          <View style={styles.featureRow}>
+            <Text style={styles.featureIcon}>✓</Text>
+            <Text style={styles.featureText}>High quality output</Text>
+          </View>
         </View>
+
+        {/* Documents button */}
+        <TouchableOpacity
+          style={styles.documentsButton}
+          onPress={() => router.push('/(tabs)/documents')}
+        >
+          <Text style={styles.documentsButtonText}>📁 View Documents</Text>
+        </TouchableOpacity>
       </View>
 
       {/* Status bar safe area */}
@@ -257,145 +191,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background.dark,
   },
-  detectionHintContainer: {
-    position: 'absolute',
-    top: Platform.OS === 'ios' ? 120 : 100,
-    left: spacing.md,
-    right: spacing.md,
-    alignItems: 'center',
-  },
-  detectionHint: {
-    ...typography.caption,
-    color: colors.text.primary.dark,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: borderRadius.full,
-  },
-  topControls: {
-    position: 'absolute',
-    top: Platform.OS === 'ios' ? 60 : 40,
-    left: spacing.md,
-    right: spacing.md,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  iconButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    position: 'relative',
-  },
-  iconButtonText: {
-    fontSize: 24,
-  },
-  activeIndicator: {
-    position: 'absolute',
-    bottom: -4,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: colors.primary.teal,
-  },
-  flashContainer: {
-    alignItems: 'center',
-  },
-  flashLabel: {
-    ...typography.caption,
-    color: colors.text.primary.dark,
-    fontSize: 10,
-    marginTop: 2,
-  },
-  modeButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: borderRadius.full,
-    gap: spacing.xs,
-  },
-  modeButtonIcon: {
-    fontSize: 20,
-  },
-  modeButtonText: {
-    ...typography.button,
-    color: colors.text.primary.dark,
-    fontSize: 14,
-  },
-  modeSelectorContainer: {
-    position: 'absolute',
-    top: Platform.OS === 'ios' ? 120 : 100,
-    left: spacing.md,
-    right: spacing.md,
-    backgroundColor: 'rgba(0, 0, 0, 0.9)',
-    borderRadius: borderRadius.lg,
-    padding: spacing.sm,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-  },
-  modeOption: {
-    flex: 1,
-    minWidth: 70,
-    alignItems: 'center',
-    padding: spacing.sm,
-    borderRadius: borderRadius.md,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  modeOptionActive: {
-    backgroundColor: colors.primary.teal,
-  },
-  modeOptionIcon: {
-    fontSize: 24,
-    marginBottom: 4,
-  },
-  modeOptionText: {
-    ...typography.caption,
-    color: colors.text.primary.dark,
-    fontSize: 11,
-  },
-  bottomControls: {
-    position: 'absolute',
-    bottom: Platform.OS === 'ios' ? 40 : 24,
-    left: 0,
-    right: 0,
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    alignItems: 'center',
-    paddingHorizontal: spacing.xl,
-  },
-  captureButton: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: 'white',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 6,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
-  },
-  captureButtonDisabled: {
-    opacity: 0.5,
-  },
-  captureButtonInner: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: 'white',
-  },
-  leftControl: {
-    flex: 1,
-    alignItems: 'flex-start',
-  },
-  rightControl: {
-    flex: 1,
-    alignItems: 'flex-end',
-  },
   statusBarSafeArea: {
     position: 'absolute',
     top: 0,
@@ -404,54 +199,136 @@ const styles = StyleSheet.create({
     height: Platform.OS === 'ios' ? 44 : 0,
     backgroundColor: 'rgba(0, 0, 0, 0.3)',
   },
-  permissionContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: spacing.xl,
+  header: {
+    paddingTop: Platform.OS === 'ios' ? 60 : 40,
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.lg,
+    backgroundColor: colors.primary.teal,
   },
-  permissionIcon: {
-    fontSize: 64,
-    marginBottom: spacing.lg,
-  },
-  permissionTitle: {
+  headerTitle: {
     ...typography.heading,
+    fontSize: 32,
     color: colors.text.primary.dark,
-    marginBottom: spacing.sm,
-    textAlign: 'center',
+    marginBottom: spacing.xs,
   },
-  permissionText: {
+  headerSubtitle: {
     ...typography.body,
-    color: colors.text.secondary.dark,
-    textAlign: 'center',
+    color: 'rgba(255, 255, 255, 0.9)',
+    fontSize: 14,
+  },
+  content: {
+    flex: 1,
+    padding: spacing.lg,
+  },
+  sectionTitle: {
+    ...typography.heading,
+    fontSize: 20,
+    color: colors.text.primary.dark,
+    marginBottom: spacing.md,
+  },
+  modesGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.md,
     marginBottom: spacing.xl,
   },
-  permissionButton: {
-    backgroundColor: colors.primary.teal,
-    paddingHorizontal: spacing.xl,
-    paddingVertical: spacing.md,
-    borderRadius: borderRadius.full,
+  modeCard: {
+    flex: 1,
+    minWidth: '45%',
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    padding: spacing.md,
+    borderRadius: borderRadius.lg,
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  modeCardActive: {
+    backgroundColor: 'rgba(20, 184, 166, 0.2)',
+    borderColor: colors.primary.teal,
+  },
+  modeCardIcon: {
+    fontSize: 40,
     marginBottom: spacing.sm,
   },
-  permissionButtonText: {
+  modeCardLabel: {
     ...typography.button,
     color: colors.text.primary.dark,
+    fontSize: 16,
+    marginBottom: spacing.xs,
   },
-  settingsButton: {
-    backgroundColor: 'rgba(139, 92, 246, 0.8)',
+  modeCardLabelActive: {
+    color: colors.primary.teal,
+  },
+  modeCardDescription: {
+    ...typography.caption,
+    color: colors.text.secondary.dark,
+    textAlign: 'center',
+    fontSize: 11,
+  },
+  scanButton: {
+    backgroundColor: colors.primary.teal,
+    paddingVertical: spacing.lg,
     paddingHorizontal: spacing.xl,
-    paddingVertical: spacing.md,
     borderRadius: borderRadius.full,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.xl,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
   },
-  settingsButtonText: {
+  scanButtonDisabled: {
+    opacity: 0.5,
+  },
+  scanButtonIcon: {
+    fontSize: 24,
+  },
+  scanButtonText: {
+    ...typography.button,
+    color: colors.text.primary.dark,
+    fontSize: 18,
+  },
+  featuresContainer: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    padding: spacing.md,
+    borderRadius: borderRadius.lg,
+    marginBottom: spacing.lg,
+  },
+  featuresTitle: {
     ...typography.button,
     color: colors.text.primary.dark,
     fontSize: 14,
+    marginBottom: spacing.sm,
   },
-  errorText: {
+  featureRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: spacing.xs,
+  },
+  featureIcon: {
+    color: colors.primary.teal,
+    marginRight: spacing.sm,
+    fontSize: 14,
+  },
+  featureText: {
     ...typography.body,
+    color: colors.text.secondary.dark,
+    fontSize: 14,
+  },
+  documentsButton: {
+    backgroundColor: 'rgba(139, 92, 246, 0.8)',
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.xl,
+    borderRadius: borderRadius.full,
+    alignItems: 'center',
+  },
+  documentsButtonText: {
+    ...typography.button,
     color: colors.text.primary.dark,
-    textAlign: 'center',
-    marginTop: spacing.xxl,
+    fontSize: 16,
   },
 });
