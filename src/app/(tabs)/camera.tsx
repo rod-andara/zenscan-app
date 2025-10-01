@@ -4,30 +4,18 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  Dimensions,
   Platform,
   Alert,
+  Linking,
 } from 'react-native';
-import { Camera, useCameraDevice, useCameraPermission, useFrameProcessor } from 'react-native-vision-camera';
+import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
 import { useRouter } from 'expo-router';
-import { useSharedValue, runOnJS } from 'react-native-reanimated';
-import ReactNativeHapticFeedback from 'react-native-haptic-feedback';
 import { colors, spacing, typography, borderRadius } from '../../design/tokens';
 import { useDocumentStore } from '../../stores/documentStore';
 import { debugLogger } from '../../utils/debugLogger';
 import { ScanMode } from '../../utils/documentDetection';
-import { Document, Page, Point } from '../../types';
-import { DocumentDetectionOverlay } from '../../components/DocumentDetectionOverlay';
-import {
-  DetectedRectangle,
-  detectRectangleInFrame,
-  isRectangleStable,
-  isRectangleLargeEnough,
-} from '../../utils/documentFrameProcessor';
-import { applyPerspectiveCorrection, validateCorners, createDefaultCorners } from '../../utils/perspectiveCorrection';
+import { Document, Page } from '../../types';
 import { createDefaultEdits } from '../../utils/imageEdits';
-
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 const SCAN_MODES: { id: ScanMode; label: string; icon: string }[] = [
   { id: 'document', label: 'Document', icon: '📄' },
@@ -37,104 +25,31 @@ const SCAN_MODES: { id: ScanMode; label: string; icon: string }[] = [
   { id: 'photo', label: 'Photo', icon: '📷' },
 ];
 
-const STABILITY_THRESHOLD = 300; // ms
-const STABILITY_DISTANCE = 20; // pixels
-
 export default function CameraScreen() {
   const router = useRouter();
   const cameraRef = useRef<Camera>(null);
 
+  const [cameraPosition, setCameraPosition] = useState<'back' | 'front'>('back');
+  const [flash, setFlash] = useState<'off' | 'on' | 'auto'>('off');
   const [scanMode, setScanMode] = useState<ScanMode>('document');
   const [isCapturing, setIsCapturing] = useState(false);
-  const [flash, setFlash] = useState<'off' | 'on'>('off');
-  const [detectedCorners, setDetectedCorners] = useState<[Point, Point, Point, Point] | null>(null);
-  const [isStable, setIsStable] = useState(false);
-  const [detectionConfidence, setDetectionConfidence] = useState(0);
+  const [showModeSelector, setShowModeSelector] = useState(false);
 
   const { hasPermission, requestPermission } = useCameraPermission();
-  const device = useCameraDevice('back');
+  const device = useCameraDevice(cameraPosition);
 
   const addDocument = useDocumentStore((state) => state.addDocument);
   const setCurrentDocument = useDocumentStore((state) => state.setCurrentDocument);
-
-  // Shared values for frame processor
-  const lastDetection = useSharedValue<DetectedRectangle | null>(null);
-  const stableStartTime = useSharedValue<number>(0);
-  const hasTriggeredHaptic = useSharedValue<boolean>(false);
 
   useEffect(() => {
     if (!hasPermission) {
       requestPermission();
     }
-  }, [hasPermission]);
-
-  // Callbacks from frame processor
-  const onDetectionUpdate = useCallback((corners: [Point, Point, Point, Point] | null, confidence: number) => {
-    setDetectedCorners(corners);
-    setDetectionConfidence(confidence);
-  }, []);
-
-  const onStabilityChange = useCallback((stable: boolean) => {
-    setIsStable(stable);
-  }, []);
-
-  const triggerHaptic = useCallback(() => {
-    ReactNativeHapticFeedback.trigger('impactMedium', {
-      enableVibrateFallback: true,
-      ignoreAndroidSystemSettings: false,
-    });
-  }, []);
-
-  // Real-time frame processor
-  const frameProcessor = useFrameProcessor((frame) => {
-    'worklet';
-
-    const detected = detectRectangleInFrame(frame);
-
-    if (detected && isRectangleLargeEnough(detected.corners, frame.width, frame.height)) {
-      runOnJS(onDetectionUpdate)(detected.corners, detected.confidence);
-
-      // Check stability
-      const stable = isRectangleStable(detected, lastDetection.value, STABILITY_DISTANCE);
-
-      if (stable) {
-        const now = Date.now();
-        if (stableStartTime.value === 0) {
-          stableStartTime.value = now;
-        } else if (now - stableStartTime.value >= STABILITY_THRESHOLD) {
-          runOnJS(onStabilityChange)(true);
-
-          // Trigger haptic once when stable
-          if (!hasTriggeredHaptic.value) {
-            runOnJS(triggerHaptic)();
-            hasTriggeredHaptic.value = true;
-          }
-        }
-      } else {
-        stableStartTime.value = 0;
-        hasTriggeredHaptic.value = false;
-        runOnJS(onStabilityChange)(false);
-      }
-
-      lastDetection.value = detected;
-    } else {
-      runOnJS(onDetectionUpdate)(null, 0);
-      runOnJS(onStabilityChange)(false);
-      stableStartTime.value = 0;
-      hasTriggeredHaptic.value = false;
-    }
-  }, []);
+  }, [hasPermission, requestPermission]);
 
   const handleCapture = useCallback(async () => {
     if (!cameraRef.current || isCapturing) {
       debugLogger.warn('Camera not ready or already capturing');
-      return;
-    }
-
-    // Require stable detection for better results
-    if (!isStable && detectionConfidence < 0.6) {
-      debugLogger.warn('Detection not stable enough, waiting...');
-      Alert.alert('Hold Steady', 'Please hold your device steady and ensure the document is fully visible.');
       return;
     }
 
@@ -144,7 +59,6 @@ export default function CameraScreen() {
     try {
       const photo = await cameraRef.current.takePhoto({
         flash: flash,
-        enableShutterSound: true,
       });
 
       debugLogger.success('Photo captured', {
@@ -153,43 +67,17 @@ export default function CameraScreen() {
         path: photo.path.substring(0, 50) + '...',
       });
 
-      const originalUri = `file://${photo.path}`;
+      const photoUri = `file://${photo.path}`;
 
-      // Use detected corners or create default ones
-      let corners = detectedCorners;
-      let confidence = detectionConfidence;
-
-      if (!corners || !validateCorners(corners)) {
-        debugLogger.warn('Invalid or missing corners, using defaults');
-        corners = createDefaultCorners(photo.width, photo.height);
-        confidence = 0.5;
-      }
-
-      // Apply perspective correction
-      debugLogger.info('Applying perspective correction...');
-      const correctionResult = await applyPerspectiveCorrection(
-        originalUri,
-        corners,
-        photo.width,
-        photo.height
-      );
-
-      if (!correctionResult.success) {
-        debugLogger.warn('Perspective correction failed, using original', { error: correctionResult.error });
-      }
-
-      // Create page with both original and processed URIs
       const newPage: Page = {
         id: Date.now().toString(),
-        uri: correctionResult.correctedUri, // Use corrected as main
-        processedUri: correctionResult.correctedUri,
-        originalUri: originalUri, // Keep original for reprocessing
-        width: correctionResult.width,
-        height: correctionResult.height,
+        uri: photoUri,
+        processedUri: photoUri,
+        originalUri: photoUri,
+        width: photo.width,
+        height: photo.height,
         order: 0,
-        detectedCorners: correctionResult.appliedCorners,
-        confidence: confidence,
-        edits: createDefaultEdits(corners),
+        edits: createDefaultEdits(),
       };
 
       const newDocument: Document = {
@@ -200,16 +88,14 @@ export default function CameraScreen() {
         updatedAt: new Date(),
       };
 
-      debugLogger.success('Document created with perspective correction', {
+      debugLogger.info('Creating document', {
         id: newDocument.id,
-        pages: newDocument.pages.length,
-        corrected: correctionResult.success,
+        scanMode,
       });
 
       addDocument(newDocument);
       setCurrentDocument(newDocument);
 
-      // Navigate to edit screen
       router.push('/edit/');
     } catch (error) {
       debugLogger.error('Failed to capture photo', error);
@@ -217,15 +103,42 @@ export default function CameraScreen() {
     } finally {
       setIsCapturing(false);
     }
-  }, [flash, isCapturing, scanMode, addDocument, setCurrentDocument, router, detectedCorners, detectionConfidence, isStable]);
+  }, [flash, scanMode, isCapturing, addDocument, setCurrentDocument, router]);
+
+  const toggleFlash = useCallback(() => {
+    setFlash((current) => {
+      if (current === 'off') return 'auto';
+      if (current === 'auto') return 'on';
+      return 'off';
+    });
+  }, []);
+
+  const toggleCamera = useCallback(() => {
+    setCameraPosition((current) => (current === 'back' ? 'front' : 'back'));
+  }, []);
+
+  const handleNavigateToDocuments = useCallback(() => {
+    router.push('/(tabs)/documents');
+  }, [router]);
+
+  const openSettings = useCallback(() => {
+    Linking.openSettings();
+  }, []);
 
   if (!hasPermission) {
     return (
       <View style={styles.container}>
         <View style={styles.permissionContainer}>
-          <Text style={styles.permissionText}>Camera permission is required</Text>
+          <Text style={styles.permissionIcon}>📷</Text>
+          <Text style={styles.permissionTitle}>Camera Permission Required</Text>
+          <Text style={styles.permissionText}>
+            ZenScan needs camera access to scan documents
+          </Text>
           <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
-            <Text style={styles.permissionButtonText}>Grant Permission</Text>
+            <Text style={styles.permissionButtonText}>Grant Camera Access</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.settingsButton} onPress={openSettings}>
+            <Text style={styles.settingsButtonText}>Open Settings</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -240,112 +153,88 @@ export default function CameraScreen() {
     );
   }
 
-  const qualityPercentage = Math.round(detectionConfidence * 100);
-
   return (
     <View style={styles.container}>
-      {/* Camera View */}
       <Camera
         ref={cameraRef}
         style={StyleSheet.absoluteFill}
         device={device}
         isActive={true}
         photo={true}
-        frameProcessor={frameProcessor}
+        enableZoomGesture={true}
+        enableLocation={false}
       />
 
-      {/* Edge Detection Overlay */}
-      {detectedCorners && (
-        <DocumentDetectionOverlay
-          corners={detectedCorners}
-          isStable={isStable}
-          frameWidth={SCREEN_WIDTH}
-          frameHeight={SCREEN_HEIGHT}
-          viewWidth={SCREEN_WIDTH}
-          viewHeight={SCREEN_HEIGHT}
-        />
-      )}
-
-      {/* Top Header */}
-      <View style={styles.topBar}>
-        <TouchableOpacity
-          style={styles.topButton}
-          onPress={() => setFlash(flash === 'off' ? 'on' : 'off')}
-        >
-          <Text style={styles.topButtonText}>{flash === 'off' ? '⚡ Off' : '⚡ On'}</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.topButton}
-          onPress={() => router.push('/(tabs)/documents')}
-        >
-          <Text style={styles.topButtonText}>📁 Docs</Text>
-        </TouchableOpacity>
+      <View style={styles.detectionHintContainer}>
+        <Text style={styles.detectionHint}>Position document in view and tap capture</Text>
       </View>
 
-      {/* Quality Indicator */}
-      <View style={styles.qualityContainer}>
-        <Text style={styles.qualityText}>Alignment Quality</Text>
-        <View style={styles.qualityBarContainer}>
-          <View
-            style={[
-              styles.qualityBar,
-              {
-                width: `${qualityPercentage}%`,
-                backgroundColor:
-                  qualityPercentage > 75
-                    ? colors.status.success
-                    : qualityPercentage > 50
-                    ? colors.status.warning
-                    : colors.status.error,
-              },
-            ]}
-          />
+      <View style={styles.topControls}>
+        <View style={styles.flashContainer}>
+          <TouchableOpacity style={styles.iconButton} onPress={toggleFlash}>
+            <Text style={styles.iconButtonText}>⚡</Text>
+            {flash !== 'off' && <View style={styles.activeIndicator} />}
+          </TouchableOpacity>
+          {flash !== 'off' && <Text style={styles.flashLabel}>{flash.toUpperCase()}</Text>}
         </View>
-        <Text style={styles.qualityPercentage}>{qualityPercentage}%</Text>
+
+        <TouchableOpacity
+          style={styles.modeButton}
+          onPress={() => setShowModeSelector(!showModeSelector)}
+        >
+          <Text style={styles.modeButtonIcon}>
+            {SCAN_MODES.find((m) => m.id === scanMode)?.icon}
+          </Text>
+          <Text style={styles.modeButtonText}>
+            {SCAN_MODES.find((m) => m.id === scanMode)?.label}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.iconButton} onPress={handleNavigateToDocuments}>
+          <Text style={styles.iconButtonText}>📁</Text>
+        </TouchableOpacity>
       </View>
 
-      {/* Scan Mode Selector */}
-      <View style={styles.modeContainer}>
-        <View style={styles.modeButtons}>
+      {showModeSelector && (
+        <View style={styles.modeSelectorContainer}>
           {SCAN_MODES.map((mode) => (
             <TouchableOpacity
               key={mode.id}
               style={[
-                styles.modeButton,
-                scanMode === mode.id && styles.modeButtonActive,
+                styles.modeOption,
+                scanMode === mode.id && styles.modeOptionActive,
               ]}
-              onPress={() => setScanMode(mode.id)}
+              onPress={() => {
+                setScanMode(mode.id);
+                setShowModeSelector(false);
+              }}
             >
-              <Text style={styles.modeIcon}>{mode.icon}</Text>
-              <Text style={[
-                styles.modeLabel,
-                scanMode === mode.id && styles.modeLabelActive,
-              ]}>
-                {mode.label}
-              </Text>
+              <Text style={styles.modeOptionIcon}>{mode.icon}</Text>
+              <Text style={styles.modeOptionText}>{mode.label}</Text>
             </TouchableOpacity>
           ))}
         </View>
-      </View>
+      )}
 
-      {/* Capture Button */}
-      <View style={styles.captureContainer}>
+      <View style={styles.bottomControls}>
+        <View style={styles.leftControl}>
+          <TouchableOpacity style={styles.iconButton} onPress={toggleCamera}>
+            <Text style={styles.iconButtonText}>🔄</Text>
+          </TouchableOpacity>
+        </View>
+
         <TouchableOpacity
-          style={[
-            styles.captureButton,
-            isStable && styles.captureButtonReady,
-            isCapturing && styles.captureButtonDisabled,
-          ]}
+          style={[styles.captureButton, isCapturing && styles.captureButtonDisabled]}
           onPress={handleCapture}
           disabled={isCapturing}
         >
           <View style={styles.captureButtonInner} />
         </TouchableOpacity>
-        {isStable && (
-          <Text style={styles.captureHint}>✓ Ready to scan</Text>
-        )}
+
+        <View style={styles.rightControl} />
       </View>
+
+      <View style={styles.statusBarSafeArea} />
     </View>
   );
 }
@@ -353,18 +242,26 @@ export default function CameraScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000',
+    backgroundColor: colors.background.dark,
   },
   permissionContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     padding: spacing.xl,
+    gap: spacing.md,
+  },
+  permissionIcon: {
+    fontSize: 48,
+  },
+  permissionTitle: {
+    ...typography.title3,
+    color: colors.text.primary.dark,
+    textAlign: 'center',
   },
   permissionText: {
     ...typography.body,
-    color: colors.text.primary.dark,
-    marginBottom: spacing.md,
+    color: colors.text.secondary.dark,
     textAlign: 'center',
   },
   permissionButton: {
@@ -377,135 +274,167 @@ const styles = StyleSheet.create({
     ...typography.button,
     color: colors.text.primary.dark,
   },
+  settingsButton: {
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    borderRadius: borderRadius.full,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  settingsButtonText: {
+    ...typography.button,
+    color: colors.text.secondary.dark,
+  },
   errorText: {
     ...typography.body,
     color: colors.text.primary.dark,
     textAlign: 'center',
     padding: spacing.xl,
   },
-  topBar: {
+  detectionHintContainer: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 50 : 20,
-    left: 0,
-    right: 0,
+    top: Platform.OS === 'ios' ? 120 : 100,
+    left: spacing.md,
+    right: spacing.md,
+    alignItems: 'center',
+  },
+  detectionHint: {
+    ...typography.caption,
+    color: colors.text.primary.dark,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: borderRadius.full,
+  },
+  topControls: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 60 : 40,
+    left: spacing.md,
+    right: spacing.md,
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingHorizontal: spacing.md,
+    alignItems: 'center',
   },
-  topButton: {
+  iconButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.md,
-    borderRadius: borderRadius.full,
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
   },
-  topButtonText: {
-    ...typography.button,
-    color: 'white',
-    fontSize: 14,
+  iconButtonText: {
+    fontSize: 24,
   },
-  qualityContainer: {
+  activeIndicator: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 110 : 80,
-    left: spacing.lg,
-    right: spacing.lg,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    padding: spacing.md,
-    borderRadius: borderRadius.lg,
-  },
-  qualityText: {
-    ...typography.caption,
-    color: 'white',
-    marginBottom: spacing.xs,
-    textAlign: 'center',
-  },
-  qualityBarContainer: {
+    bottom: -4,
+    width: 8,
     height: 8,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
     borderRadius: 4,
-    overflow: 'hidden',
-    marginBottom: spacing.xs,
+    backgroundColor: colors.primary.teal,
   },
-  qualityBar: {
-    height: '100%',
-    borderRadius: 4,
+  flashContainer: {
+    alignItems: 'center',
   },
-  qualityPercentage: {
+  flashLabel: {
     ...typography.caption,
-    color: 'white',
-    textAlign: 'center',
-    fontSize: 12,
-  },
-  modeContainer: {
-    position: 'absolute',
-    bottom: 140,
-    left: 0,
-    right: 0,
-    paddingHorizontal: spacing.md,
-  },
-  modeButtons: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    borderRadius: borderRadius.full,
-    padding: spacing.xs,
+    color: colors.text.primary.dark,
+    fontSize: 10,
+    marginTop: 2,
   },
   modeButton: {
+    flexDirection: 'row',
     alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.sm,
     borderRadius: borderRadius.full,
-    minWidth: 60,
+    gap: spacing.xs,
   },
-  modeButtonActive: {
-    backgroundColor: 'rgba(20, 184, 166, 0.3)',
-  },
-  modeIcon: {
+  modeButtonIcon: {
     fontSize: 20,
-    marginBottom: 2,
   },
-  modeLabel: {
-    ...typography.caption,
-    color: 'rgba(255, 255, 255, 0.7)',
-    fontSize: 10,
+  modeButtonText: {
+    ...typography.button,
+    color: colors.text.primary.dark,
+    fontSize: 14,
   },
-  modeLabelActive: {
-    color: colors.primary.teal,
-    fontWeight: '600',
-  },
-  captureContainer: {
+  modeSelectorContainer: {
     position: 'absolute',
-    bottom: 40,
+    top: Platform.OS === 'ios' ? 120 : 100,
+    left: spacing.md,
+    right: spacing.md,
+    backgroundColor: 'rgba(0, 0, 0, 0.9)',
+    borderRadius: borderRadius.lg,
+    padding: spacing.sm,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  modeOption: {
+    flex: 1,
+    minWidth: 70,
+    alignItems: 'center',
+    padding: spacing.sm,
+    borderRadius: borderRadius.md,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  modeOptionActive: {
+    backgroundColor: colors.primary.teal,
+  },
+  modeOptionIcon: {
+    fontSize: 24,
+    marginBottom: 4,
+  },
+  modeOptionText: {
+    ...typography.caption,
+    color: colors.text.primary.dark,
+    fontSize: 11,
+  },
+  bottomControls: {
+    position: 'absolute',
+    bottom: Platform.OS === 'ios' ? 40 : 24,
     left: 0,
     right: 0,
+    flexDirection: 'row',
+    justifyContent: 'space-around',
     alignItems: 'center',
+    paddingHorizontal: spacing.xl,
+  },
+  leftControl: {
+    flex: 1,
+    alignItems: 'flex-start',
+  },
+  rightControl: {
+    flex: 1,
+    alignItems: 'flex-end',
   },
   captureButton: {
     width: 80,
     height: 80,
     borderRadius: 40,
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    backgroundColor: 'white',
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 4,
-    borderColor: 'white',
-  },
-  captureButtonReady: {
-    borderColor: colors.status.success,
-    backgroundColor: 'rgba(34, 197, 94, 0.2)',
+    borderWidth: 6,
+    borderColor: 'rgba(255, 255, 255, 0.3)',
   },
   captureButtonDisabled: {
     opacity: 0.5,
   },
   captureButtonInner: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: 'white',
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: colors.text.primary.dark,
   },
-  captureHint: {
-    ...typography.caption,
-    color: colors.status.success,
-    marginTop: spacing.sm,
-    fontWeight: '600',
+  statusBarSafeArea: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: Platform.OS === 'ios' ? 44 : 0,
   },
 });
