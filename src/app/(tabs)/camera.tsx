@@ -255,7 +255,7 @@ const styles = StyleSheet.create({
     fontSize: 48,
   },
   permissionTitle: {
-    ...typography.title3,
+    ...typography.subheading,
     color: colors.text.primary.dark,
     textAlign: 'center',
   },
