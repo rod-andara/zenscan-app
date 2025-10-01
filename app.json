@@ -18,7 +18,7 @@
       "bundleIdentifier": "com.quickscan.app",
       "buildNumber": "8",
       "infoPlist": {
-        "NSCameraUsageDescription": "Quick Scan needs camera access to scan documents"
+        "NSCameraUsageDescription": "Quick Scan needs camera access to scan and detect documents"
       }
     },
     "android": {
@@ -30,8 +30,6 @@
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "permissions": [
-        "android.permission.CAMERA",
-        "android.permission.RECORD_AUDIO",
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
       ],
@@ -56,6 +54,13 @@
           "enableMicrophonePermission": false
         }
       ]
-    ]
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "9d7d7d5b-0400-4cf5-9f82-f65c4d59b05d"
+      }
+    },
+    "owner": "rod_andara"
   }
 }

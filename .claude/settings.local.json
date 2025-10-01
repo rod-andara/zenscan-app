@@ -10,7 +10,10 @@
       "Bash(git checkout:*)",
       "Bash(git commit -m \"$(cat <<''EOF''\nfeat: Create Expo Snack-compatible version\n\nCreate simplified JavaScript version for Expo Snack testing:\n\n- Convert TypeScript to JavaScript (remove all type annotations)\n- Replace Expo Router with simple state-based navigation\n- Flatten folder structure (src/app → components/)\n- Replace Zustand with local React state\n- Simplify dependencies to Snack-compatible versions\n\nNew files:\n- App.js: Main entry point with navigation logic\n- components/CameraScreen.js: Camera with document detection\n- components/EditScreen.js: Image editing with crop/rotate\n- components/DocumentsScreen.js: Document list view\n- SNACK-README.md: Instructions for Snack import\n\nFeatures preserved:\n- Camera with detection frame overlay\n- Image capture and editing\n- Crop with draggable corners\n- 90° rotation\n- Multi-page document support\n- Document list and management\n\nRemoved for Snack compatibility:\n- TypeScript\n- Expo Router\n- Zustand stores\n- Debug console\n- Brightness/contrast sliders\n- Complex build configuration\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
       "Bash(git commit:*)",
-      "Bash(npx:*)"
+      "Bash(npx:*)",
+      "Bash(eas build:*)",
+      "Bash(eas init:*)",
+      "Bash(eas credentials:*)"
     ],
     "deny": [],
     "ask": []
