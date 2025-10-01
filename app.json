@@ -18,7 +18,8 @@
       "bundleIdentifier": "com.quickscan.app",
       "buildNumber": "8",
       "infoPlist": {
-        "NSCameraUsageDescription": "Quick Scan needs camera access to scan and detect documents"
+        "NSCameraUsageDescription": "Quick Scan needs camera access to scan and detect documents",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
