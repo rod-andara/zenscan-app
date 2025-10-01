@@ -11,7 +11,8 @@
 
 | Build | Date | Status | Issue | Fix | Notes |
 |-------|------|--------|-------|-----|-------|
-| **15** | Oct 1, 2025 | ✅ **LATEST** | Worklets version mismatch | Pinned exact versions | **Testing in progress** |
+| **16** | Oct 1, 2025 | ✅ **LATEST** | Frame processor crash | Disabled frame processors | **Testing in progress** |
+| 15 | Oct 1, 2025 | ❌ Crashed | Worklets + Frame processor | Pinned versions | Still crashed |
 | 14 | Oct 1, 2025 | ❌ Crashed | Location + Worklets | Disabled location | Exposed Worklets issue |
 | 13 | Oct 1, 2025 | ❌ Crashed | Location services | Added enableLocation=false | Incomplete fix |
 | 12 | Oct 1, 2025 | ⚠️ Warning | Apple ITMS-90683 | Added location permission | Submitted with warning |
@@ -21,30 +22,89 @@
 
 ---
 
-## 📦 Current Build: Build 15
+## 📦 Current Build: Build 16
 
 ### **Status**: ✅ Submitted to TestFlight (Processing)
-### **Submitted**: October 1, 2025, 12:07:52
+### **Submitted**: October 1, 2025, 12:56:52
 
-**Build Details**: https://expo.dev/accounts/rod_andara/projects/zenscan/builds/4a67c1e0-818c-4af7-b43c-603575db584c
+**Build Details**: https://expo.dev/accounts/rod_andara/projects/zenscan/builds/db6e608e-7b46-4163-b61f-84f02e670639
 
-**Download IPA**: https://expo.dev/artifacts/eas/abU3pue5Mm33mXni6RsdE1.ipa
+**Download IPA**: https://expo.dev/artifacts/eas/t6zWmwSejcxQEjsXosPJdz.ipa
 
 **TestFlight**: https://appstoreconnect.apple.com/apps/6753142099/testflight/ios
 
 ### **What's Fixed**
-✅ Worklets version mismatch (SIGABRT crash on Thread 8)
-✅ Location services completely disabled
-✅ All Phase 1 & 2 features working
+✅ Frame processor production crash (SIGABRT on Thread 7 & 12)
+✅ Location services disabled
+✅ Basic camera functionality working
+
+### **What's Removed (Temporarily)**
+❌ Real-time document detection
+❌ Animated polygon overlay
+❌ Auto-capture
+❌ Haptic feedback on detection
 
 ### **Documentation**
-📄 [BUILD-15-WORKLETS-FIX.md](./BUILD-15-WORKLETS-FIX.md) - Detailed explanation
+📄 [BUILD-16-NO-FRAME-PROCESSORS.md](./BUILD-16-NO-FRAME-PROCESSORS.md) - Detailed explanation
 
 ---
 
 ## 🔄 Build History (Reverse Chronological)
 
-### **Build 15** - October 1, 2025, 12:07 ✅ LATEST
+### **Build 16** - October 1, 2025, 12:56 ✅ LATEST
+**Issue**: Frame processor crash in production builds
+- Thread 7: SIGABRT in React dispatch queue (libdispatch.dylib)
+- Thread 12: RNWorklet::DispatchQueue crash
+- Frame processors work in dev, crash in TestFlight/production
+
+**Fix Applied**:
+- Set `enableFrameProcessors: false` in Vision Camera plugin config
+- Replaced camera component with simplified version (no frame processor)
+- Removed all real-time detection code:
+  - useFrameProcessor hook
+  - documentFrameProcessor worklet
+  - DocumentDetectionOverlay component
+  - Auto-capture logic
+  - Animated polygon overlay
+
+**Key Changes**:
+```json
+// app.json
+{
+  "plugins": [
+    ["react-native-vision-camera", {
+      "enableFrameProcessors": false  // ← Added this
+    }]
+  ]
+}
+```
+
+**What Still Works**:
+- Basic Vision Camera photo capture
+- Flash modes (off/auto/on)
+- Camera flip (front/back)
+- Scan mode selection
+- Permission handling
+
+**Features Removed (Temporarily)**:
+- Real-time document detection
+- Animated polygon overlay
+- Auto-capture toggle
+- Haptic feedback on detection
+- Stability detection
+
+**Commits**:
+- `314e14c` - fix: Disable frame processors to resolve production crashes
+
+**Status**: 🔄 Processing on Apple servers
+**Expected**: Should launch without crashes
+**Next Steps**: Implement post-capture detection instead of real-time
+
+**Documentation**: [BUILD-16-NO-FRAME-PROCESSORS.md](./BUILD-16-NO-FRAME-PROCESSORS.md)
+
+---
+
+### **Build 15** - October 1, 2025, 12:07 ❌ CRASHED
 **Issue**: Worklets version mismatch crash
 - JavaScript: Worklets 0.6.0 (due to caret versioning)
 - Native iOS: Worklets 0.5.1
@@ -414,6 +474,6 @@ eas build --platform ios --profile production
 
 ---
 
-**Last Updated**: October 1, 2025, 12:10
-**Current Build**: 15 (Processing)
-**Next Action**: Wait for Apple processing, test Build 15
+**Last Updated**: October 1, 2025, 13:00
+**Current Build**: 16 (Processing)
+**Next Action**: Wait for Apple processing, test Build 16 (should not crash)
