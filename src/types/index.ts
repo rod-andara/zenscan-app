@@ -6,14 +6,9 @@ export interface Document {
   updatedAt: Date;
 }
 
-export interface Page {
-  id: string;
-  uri: string;
-  thumbnail?: string;
-  originalUri?: string;
-  width: number;
-  height: number;
-  order: number;
+export interface Point {
+  x: number;
+  y: number;
 }
 
 export interface CropCorner {
@@ -25,7 +20,24 @@ export interface ImageEdits {
   rotation: number;
   brightness: number;
   contrast: number;
-  cropCorners: CropCorner[];
+  saturation: number;
+  sharpness: number;
+  cropCorners: [CropCorner, CropCorner, CropCorner, CropCorner];
+  preset?: 'none' | 'blackAndWhite' | 'grayscale' | 'enhance';
+}
+
+export interface Page {
+  id: string;
+  uri: string; // Current processed URI
+  processedUri?: string; // Latest processed version
+  originalUri: string; // Untouched original from camera
+  thumbnail?: string;
+  width: number;
+  height: number;
+  order: number;
+  detectedCorners?: [Point, Point, Point, Point]; // From document detection
+  confidence?: number; // Detection confidence
+  edits: ImageEdits; // Current edit state
 }
 
 export type Theme = 'light' | 'dark';

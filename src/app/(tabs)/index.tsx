@@ -96,6 +96,20 @@ export default function CameraScreen() {
         width: photo.width,
         height: photo.height,
         order: capturedPages.length,
+        edits: {
+          rotation: 0,
+          brightness: 0,
+          contrast: 1,
+          saturation: 1,
+          sharpness: 1,
+          cropCorners: [
+            { x: 0.05, y: 0.05 },
+            { x: 0.95, y: 0.05 },
+            { x: 0.95, y: 0.95 },
+            { x: 0.05, y: 0.95 },
+          ],
+          preset: 'none',
+        },
       };
 
       if (isBatchMode && checkFeatureAccess('batch')) {

@@ -4,17 +4,28 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  Platform,
   Dimensions,
+  Platform,
   Alert,
 } from 'react-native';
-import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
+import { Camera, useCameraDevice, useCameraPermission, useFrameProcessor } from 'react-native-vision-camera';
 import { useRouter } from 'expo-router';
+import { useSharedValue, runOnJS } from 'react-native-reanimated';
+import ReactNativeHapticFeedback from 'react-native-haptic-feedback';
 import { colors, spacing, typography, borderRadius } from '../../design/tokens';
 import { useDocumentStore } from '../../stores/documentStore';
 import { debugLogger } from '../../utils/debugLogger';
-import { ScanMode, detectDocumentEdges, DetectedDocument } from '../../utils/documentDetection';
-import { Document, Page } from '../../types';
+import { ScanMode } from '../../utils/documentDetection';
+import { Document, Page, Point } from '../../types';
+import { DocumentDetectionOverlay } from '../../components/DocumentDetectionOverlay';
+import {
+  DetectedRectangle,
+  detectRectangleInFrame,
+  isRectangleStable,
+  isRectangleLargeEnough,
+} from '../../utils/documentFrameProcessor';
+import { applyPerspectiveCorrection, validateCorners, createDefaultCorners } from '../../utils/perspectiveCorrection';
+import { createDefaultEdits } from '../../utils/imageEdits';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -26,6 +37,9 @@ const SCAN_MODES: { id: ScanMode; label: string; icon: string }[] = [
   { id: 'photo', label: 'Photo', icon: '📷' },
 ];
 
+const STABILITY_THRESHOLD = 300; // ms
+const STABILITY_DISTANCE = 20; // pixels
+
 export default function CameraScreen() {
   const router = useRouter();
   const cameraRef = useRef<Camera>(null);
@@ -33,8 +47,9 @@ export default function CameraScreen() {
   const [scanMode, setScanMode] = useState<ScanMode>('document');
   const [isCapturing, setIsCapturing] = useState(false);
   const [flash, setFlash] = useState<'off' | 'on'>('off');
-  const [detectedDoc, setDetectedDoc] = useState<DetectedDocument | null>(null);
-  const [showModeSelector, setShowModeSelector] = useState(false);
+  const [detectedCorners, setDetectedCorners] = useState<[Point, Point, Point, Point] | null>(null);
+  const [isStable, setIsStable] = useState(false);
+  const [detectionConfidence, setDetectionConfidence] = useState(0);
 
   const { hasPermission, requestPermission } = useCameraPermission();
   const device = useCameraDevice('back');
@@ -42,22 +57,72 @@ export default function CameraScreen() {
   const addDocument = useDocumentStore((state) => state.addDocument);
   const setCurrentDocument = useDocumentStore((state) => state.setCurrentDocument);
 
+  // Shared values for frame processor
+  const lastDetection = useSharedValue<DetectedRectangle | null>(null);
+  const stableStartTime = useSharedValue<number>(0);
+  const hasTriggeredHaptic = useSharedValue<boolean>(false);
+
   useEffect(() => {
     if (!hasPermission) {
       requestPermission();
     }
   }, [hasPermission]);
 
-  // Simulate edge detection every 500ms (simple mock - not using frame processors)
-  useEffect(() => {
-    const interval = setInterval(() => {
-      // Mock detection with random confidence
-      const mockConfidence = 0.5 + Math.random() * 0.5;
-      const detected = detectDocumentEdges(SCREEN_WIDTH, SCREEN_HEIGHT);
-      setDetectedDoc({ ...detected, confidence: mockConfidence });
-    }, 500);
+  // Callbacks from frame processor
+  const onDetectionUpdate = useCallback((corners: [Point, Point, Point, Point] | null, confidence: number) => {
+    setDetectedCorners(corners);
+    setDetectionConfidence(confidence);
+  }, []);
 
-    return () => clearInterval(interval);
+  const onStabilityChange = useCallback((stable: boolean) => {
+    setIsStable(stable);
+  }, []);
+
+  const triggerHaptic = useCallback(() => {
+    ReactNativeHapticFeedback.trigger('impactMedium', {
+      enableVibrateFallback: true,
+      ignoreAndroidSystemSettings: false,
+    });
+  }, []);
+
+  // Real-time frame processor
+  const frameProcessor = useFrameProcessor((frame) => {
+    'worklet';
+
+    const detected = detectRectangleInFrame(frame);
+
+    if (detected && isRectangleLargeEnough(detected.corners, frame.width, frame.height)) {
+      runOnJS(onDetectionUpdate)(detected.corners, detected.confidence);
+
+      // Check stability
+      const stable = isRectangleStable(detected, lastDetection.value, STABILITY_DISTANCE);
+
+      if (stable) {
+        const now = Date.now();
+        if (stableStartTime.value === 0) {
+          stableStartTime.value = now;
+        } else if (now - stableStartTime.value >= STABILITY_THRESHOLD) {
+          runOnJS(onStabilityChange)(true);
+
+          // Trigger haptic once when stable
+          if (!hasTriggeredHaptic.value) {
+            runOnJS(triggerHaptic)();
+            hasTriggeredHaptic.value = true;
+          }
+        }
+      } else {
+        stableStartTime.value = 0;
+        hasTriggeredHaptic.value = false;
+        runOnJS(onStabilityChange)(false);
+      }
+
+      lastDetection.value = detected;
+    } else {
+      runOnJS(onDetectionUpdate)(null, 0);
+      runOnJS(onStabilityChange)(false);
+      stableStartTime.value = 0;
+      hasTriggeredHaptic.value = false;
+    }
   }, []);
 
   const handleCapture = useCallback(async () => {
@@ -66,8 +131,15 @@ export default function CameraScreen() {
       return;
     }
 
+    // Require stable detection for better results
+    if (!isStable && detectionConfidence < 0.6) {
+      debugLogger.warn('Detection not stable enough, waiting...');
+      Alert.alert('Hold Steady', 'Please hold your device steady and ensure the document is fully visible.');
+      return;
+    }
+
     setIsCapturing(true);
-    debugLogger.info('📸 Capturing photo');
+    debugLogger.info('📸 Capturing photo with Vision Camera');
 
     try {
       const photo = await cameraRef.current.takePhoto({
@@ -81,13 +153,43 @@ export default function CameraScreen() {
         path: photo.path.substring(0, 50) + '...',
       });
 
+      const originalUri = `file://${photo.path}`;
+
+      // Use detected corners or create default ones
+      let corners = detectedCorners;
+      let confidence = detectionConfidence;
+
+      if (!corners || !validateCorners(corners)) {
+        debugLogger.warn('Invalid or missing corners, using defaults');
+        corners = createDefaultCorners(photo.width, photo.height);
+        confidence = 0.5;
+      }
+
+      // Apply perspective correction
+      debugLogger.info('Applying perspective correction...');
+      const correctionResult = await applyPerspectiveCorrection(
+        originalUri,
+        corners,
+        photo.width,
+        photo.height
+      );
+
+      if (!correctionResult.success) {
+        debugLogger.warn('Perspective correction failed, using original', { error: correctionResult.error });
+      }
+
+      // Create page with both original and processed URIs
       const newPage: Page = {
         id: Date.now().toString(),
-        uri: `file://${photo.path}`,
-        originalUri: `file://${photo.path}`,
-        width: photo.width,
-        height: photo.height,
+        uri: correctionResult.correctedUri, // Use corrected as main
+        processedUri: correctionResult.correctedUri,
+        originalUri: originalUri, // Keep original for reprocessing
+        width: correctionResult.width,
+        height: correctionResult.height,
         order: 0,
+        detectedCorners: correctionResult.appliedCorners,
+        confidence: confidence,
+        edits: createDefaultEdits(corners),
       };
 
       const newDocument: Document = {
@@ -98,9 +200,10 @@ export default function CameraScreen() {
         updatedAt: new Date(),
       };
 
-      debugLogger.info('Creating document', {
+      debugLogger.success('Document created with perspective correction', {
         id: newDocument.id,
-        scanMode,
+        pages: newDocument.pages.length,
+        corrected: correctionResult.success,
       });
 
       addDocument(newDocument);
@@ -114,7 +217,7 @@ export default function CameraScreen() {
     } finally {
       setIsCapturing(false);
     }
-  }, [flash, isCapturing, scanMode, addDocument, setCurrentDocument, router]);
+  }, [flash, isCapturing, scanMode, addDocument, setCurrentDocument, router, detectedCorners, detectionConfidence, isStable]);
 
   if (!hasPermission) {
     return (
@@ -137,8 +240,7 @@ export default function CameraScreen() {
     );
   }
 
-  const isWellAligned = detectedDoc && detectedDoc.confidence > 0.75;
-  const qualityPercentage = detectedDoc ? Math.round(detectedDoc.confidence * 100) : 0;
+  const qualityPercentage = Math.round(detectionConfidence * 100);
 
   return (
     <View style={styles.container}>
@@ -149,41 +251,19 @@ export default function CameraScreen() {
         device={device}
         isActive={true}
         photo={true}
+        frameProcessor={frameProcessor}
       />
 
       {/* Edge Detection Overlay */}
-      {detectedDoc && (
-        <View style={StyleSheet.absoluteFill} pointerEvents="none">
-          {/* Document border */}
-          <View
-            style={[
-              styles.detectionBorder,
-              {
-                borderColor: isWellAligned ? colors.status.success : colors.primary.teal,
-                borderWidth: isWellAligned ? 4 : 2,
-                left: detectedDoc.corners[0].x * 0.8,
-                top: detectedDoc.corners[0].y * 0.7,
-                width: (detectedDoc.corners[1].x - detectedDoc.corners[0].x) * 0.8,
-                height: (detectedDoc.corners[3].y - detectedDoc.corners[0].y) * 0.7,
-              },
-            ]}
-          />
-
-          {/* Corner markers */}
-          {detectedDoc.corners.map((corner, index) => (
-            <View
-              key={index}
-              style={[
-                styles.cornerMarker,
-                {
-                  left: corner.x * 0.8 - 8,
-                  top: corner.y * 0.7 - 8,
-                  backgroundColor: isWellAligned ? colors.status.success : colors.primary.teal,
-                },
-              ]}
-            />
-          ))}
-        </View>
+      {detectedCorners && (
+        <DocumentDetectionOverlay
+          corners={detectedCorners}
+          isStable={isStable}
+          frameWidth={SCREEN_WIDTH}
+          frameHeight={SCREEN_HEIGHT}
+          viewWidth={SCREEN_WIDTH}
+          viewHeight={SCREEN_HEIGHT}
+        />
       )}
 
       {/* Top Header */}
@@ -254,7 +334,7 @@ export default function CameraScreen() {
         <TouchableOpacity
           style={[
             styles.captureButton,
-            isWellAligned && styles.captureButtonReady,
+            isStable && styles.captureButtonReady,
             isCapturing && styles.captureButtonDisabled,
           ]}
           onPress={handleCapture}
@@ -262,7 +342,7 @@ export default function CameraScreen() {
         >
           <View style={styles.captureButtonInner} />
         </TouchableOpacity>
-        {isWellAligned && (
+        {isStable && (
           <Text style={styles.captureHint}>✓ Ready to scan</Text>
         )}
       </View>
@@ -322,18 +402,6 @@ const styles = StyleSheet.create({
     ...typography.button,
     color: 'white',
     fontSize: 14,
-  },
-  detectionBorder: {
-    position: 'absolute',
-    borderRadius: borderRadius.md,
-  },
-  cornerMarker: {
-    position: 'absolute',
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    borderWidth: 2,
-    borderColor: 'white',
   },
   qualityContainer: {
     position: 'absolute',
