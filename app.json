@@ -53,7 +53,8 @@
           "cameraPermissionText": "ZenScan needs camera access to scan and detect documents",
           "enableCodeScanner": false,
           "enableMicrophonePermission": false,
-          "enableLocation": false
+          "enableLocation": false,
+          "enableFrameProcessors": false
         }
       ]
     ],

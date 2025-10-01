@@ -8,14 +8,25 @@ import {
   Platform,
   Alert,
   Linking,
+  Switch,
 } from 'react-native';
-import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
+import { Camera, useCameraDevice, useCameraPermission, useFrameProcessor } from 'react-native-vision-camera';
 import { useRouter } from 'expo-router';
+import { useSharedValue, runOnJS } from 'react-native-reanimated';
+import ReactNativeHapticFeedback from 'react-native-haptic-feedback';
+import * as FileSystem from 'expo-file-system';
 import { colors, spacing, typography, borderRadius } from '../../design/tokens';
 import { useDocumentStore } from '../../stores/documentStore';
 import { debugLogger } from '../../utils/debugLogger';
-import { ScanMode } from '../../utils/documentDetection';
+import { detectDocumentEdges, ScanMode, enhancementPresets } from '../../utils/documentDetection';
 import { Document, Page } from '../../types';
+import { DocumentDetectionOverlay } from '../../components/DocumentDetectionOverlay';
+import {
+  DetectedRectangle,
+  detectRectangleInFrame,
+  isRectangleStable,
+  isRectangleLargeEnough,
+} from '../../utils/documentFrameProcessor';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -27,7 +38,10 @@ const SCAN_MODES: { id: ScanMode; label: string; icon: string }[] = [
   { id: 'photo', label: 'Photo', icon: '📷' },
 ];
 
-export default function SimpleCameraScreen() {
+const STABILITY_THRESHOLD = 300; // ms
+const STABILITY_DISTANCE = 20; // pixels
+
+export default function EnhancedCameraScreen() {
   const router = useRouter();
   const cameraRef = useRef<Camera>(null);
 
@@ -36,6 +50,9 @@ export default function SimpleCameraScreen() {
   const [scanMode, setScanMode] = useState<ScanMode>('document');
   const [isCapturing, setIsCapturing] = useState(false);
   const [showModeSelector, setShowModeSelector] = useState(false);
+  const [autoCapture, setAutoCapture] = useState(false);
+  const [detectedCorners, setDetectedCorners] = useState<[any, any, any, any] | null>(null);
+  const [isStable, setIsStable] = useState(false);
 
   const { hasPermission, requestPermission } = useCameraPermission();
   const device = useCameraDevice(cameraPosition);
@@ -43,11 +60,83 @@ export default function SimpleCameraScreen() {
   const addDocument = useDocumentStore((state) => state.addDocument);
   const setCurrentDocument = useDocumentStore((state) => state.setCurrentDocument);
 
+  // Shared values for frame processor
+  const lastDetection = useSharedValue<DetectedRectangle | null>(null);
+  const stableStartTime = useSharedValue<number>(0);
+  const hasTriggeredHaptic = useSharedValue<boolean>(false);
+
   useEffect(() => {
     if (!hasPermission) {
       requestPermission();
     }
   }, [hasPermission]);
+
+  // Callbacks from frame processor (must be wrapped with runOnJS)
+  const onDetectionUpdate = useCallback((corners: [any, any, any, any] | null) => {
+    setDetectedCorners(corners);
+  }, []);
+
+  const onStabilityChange = useCallback((stable: boolean) => {
+    setIsStable(stable);
+  }, []);
+
+  const triggerHaptic = useCallback(() => {
+    ReactNativeHapticFeedback.trigger('impactMedium', {
+      enableVibrateFallback: true,
+      ignoreAndroidSystemSettings: false,
+    });
+  }, []);
+
+  const triggerAutoCapture = useCallback(() => {
+    if (autoCapture && !isCapturing) {
+      debugLogger.info('Auto-capture triggered');
+      handleCapture();
+    }
+  }, [autoCapture, isCapturing]);
+
+  // Real-time frame processor
+  const frameProcessor = useFrameProcessor((frame) => {
+    'worklet';
+
+    const detected = detectRectangleInFrame(frame);
+
+    if (detected && isRectangleLargeEnough(detected.corners, frame.width, frame.height)) {
+      // Update detection on main thread
+      runOnJS(onDetectionUpdate)(detected.corners);
+
+      // Check stability
+      const stable = isRectangleStable(detected, lastDetection.value, STABILITY_DISTANCE);
+
+      if (stable) {
+        const now = Date.now();
+        if (stableStartTime.value === 0) {
+          stableStartTime.value = now;
+        } else if (now - stableStartTime.value >= STABILITY_THRESHOLD) {
+          runOnJS(onStabilityChange)(true);
+
+          // Trigger haptic once when stable
+          if (!hasTriggeredHaptic.value) {
+            runOnJS(triggerHaptic)();
+            hasTriggeredHaptic.value = true;
+
+            // Trigger auto-capture if enabled
+            runOnJS(triggerAutoCapture)();
+          }
+        }
+      } else {
+        stableStartTime.value = 0;
+        hasTriggeredHaptic.value = false;
+        runOnJS(onStabilityChange)(false);
+      }
+
+      lastDetection.value = detected;
+    } else {
+      runOnJS(onDetectionUpdate)(null);
+      runOnJS(onStabilityChange)(false);
+      stableStartTime.value = 0;
+      hasTriggeredHaptic.value = false;
+    }
+  }, [autoCapture, isCapturing]);
 
   const handleCapture = useCallback(async () => {
     if (!cameraRef.current || isCapturing) {
@@ -67,6 +156,12 @@ export default function SimpleCameraScreen() {
         width: photo.width,
         height: photo.height,
         path: photo.path.substring(0, 50) + '...',
+      });
+
+      // Detect document edges
+      const detection = detectDocumentEdges(photo.width, photo.height);
+      debugLogger.info('Document edges detected', {
+        confidence: detection.confidence,
       });
 
       const newPage: Page = {
@@ -131,7 +226,7 @@ export default function SimpleCameraScreen() {
           <Text style={styles.permissionIcon}>📷</Text>
           <Text style={styles.permissionTitle}>Camera Permission Required</Text>
           <Text style={styles.permissionText}>
-            ZenScan needs camera access to scan documents
+            ZenScan needs camera access to scan documents with advanced edge detection
           </Text>
           <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
             <Text style={styles.permissionButtonText}>Grant Camera Access</Text>
@@ -162,12 +257,25 @@ export default function SimpleCameraScreen() {
         photo={true}
         enableZoomGesture={true}
         enableLocation={false}
+        frameProcessor={frameProcessor}
       />
+
+      {/* Animated document detection overlay */}
+      {detectedCorners && device && (
+        <DocumentDetectionOverlay
+          corners={detectedCorners}
+          isStable={isStable}
+          frameWidth={device.formats[0]?.videoWidth || SCREEN_WIDTH}
+          frameHeight={device.formats[0]?.videoHeight || SCREEN_HEIGHT}
+          viewWidth={SCREEN_WIDTH}
+          viewHeight={SCREEN_HEIGHT}
+        />
+      )}
 
       {/* Detection status hint */}
       <View style={styles.detectionHintContainer}>
-        <Text style={styles.detectionHint}>
-          Position document in view and tap capture
+        <Text style={[styles.detectionHint, isStable && styles.detectionHintStable]}>
+          {isStable ? '✓ Document ready' : 'Position document in view'}
         </Text>
       </View>
 
@@ -234,6 +342,7 @@ export default function SimpleCameraScreen() {
           style={[
             styles.captureButton,
             isCapturing && styles.captureButtonDisabled,
+            isStable && styles.captureButtonReady,
           ]}
           onPress={handleCapture}
           disabled={isCapturing}
@@ -242,7 +351,15 @@ export default function SimpleCameraScreen() {
         </TouchableOpacity>
 
         <View style={styles.rightControl}>
-          {/* Space for future controls */}
+          <View style={styles.autoCaptureSwitchContainer}>
+            <Text style={styles.autoCaptureSwitchLabel}>Auto</Text>
+            <Switch
+              value={autoCapture}
+              onValueChange={setAutoCapture}
+              trackColor={{ false: '#767577', true: colors.primary.teal }}
+              thumbColor={autoCapture ? '#fff' : '#f4f3f4'}
+            />
+          </View>
         </View>
       </View>
 
@@ -256,6 +373,51 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.background.dark,
+  },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  detectionFrame: {
+    width: SCREEN_WIDTH * 0.85,
+    height: SCREEN_HEIGHT * 0.65,
+    position: 'relative',
+  },
+  corner: {
+    position: 'absolute',
+    width: 40,
+    height: 40,
+    borderColor: colors.primary.teal,
+    borderWidth: 4,
+  },
+  cornerTopLeft: {
+    top: 0,
+    left: 0,
+    borderBottomWidth: 0,
+    borderRightWidth: 0,
+    borderTopLeftRadius: borderRadius.md,
+  },
+  cornerTopRight: {
+    top: 0,
+    right: 0,
+    borderBottomWidth: 0,
+    borderLeftWidth: 0,
+    borderTopRightRadius: borderRadius.md,
+  },
+  cornerBottomLeft: {
+    bottom: 0,
+    left: 0,
+    borderTopWidth: 0,
+    borderRightWidth: 0,
+    borderBottomLeftRadius: borderRadius.md,
+  },
+  cornerBottomRight: {
+    bottom: 0,
+    right: 0,
+    borderTopWidth: 0,
+    borderLeftWidth: 0,
+    borderBottomRightRadius: borderRadius.md,
   },
   detectionHintContainer: {
     position: 'absolute',
@@ -271,6 +433,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     borderRadius: borderRadius.full,
+  },
+  detectionHintStable: {
+    backgroundColor: 'rgba(16, 185, 129, 0.9)',
   },
   topControls: {
     position: 'absolute',
@@ -382,6 +547,9 @@ const styles = StyleSheet.create({
   captureButtonDisabled: {
     opacity: 0.5,
   },
+  captureButtonReady: {
+    borderColor: colors.status.success,
+  },
   captureButtonInner: {
     width: 64,
     height: 64,
@@ -395,6 +563,19 @@ const styles = StyleSheet.create({
   rightControl: {
     flex: 1,
     alignItems: 'flex-end',
+  },
+  autoCaptureSwitchContainer: {
+    flexDirection: 'column',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    borderRadius: borderRadius.md,
+    padding: spacing.xs,
+  },
+  autoCaptureSwitchLabel: {
+    ...typography.caption,
+    color: colors.text.primary.dark,
+    fontSize: 10,
+    marginBottom: 2,
   },
   statusBarSafeArea: {
     position: 'absolute',
