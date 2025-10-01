@@ -14,7 +14,8 @@
       "Bash(eas build:*)",
       "Bash(eas init:*)",
       "Bash(eas credentials:*)",
-      "Bash(eas submit:*)"
+      "Bash(eas submit:*)",
+      "Bash(npm run:*)"
     ],
     "deny": [],
     "ask": []
