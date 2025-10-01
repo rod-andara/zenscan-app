@@ -256,6 +256,7 @@ export default function EnhancedCameraScreen() {
         isActive={true}
         photo={true}
         enableZoomGesture={true}
+        enableLocation={false}
         frameProcessor={frameProcessor}
       />
 
