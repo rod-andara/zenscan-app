@@ -150,8 +150,6 @@ export default function EnhancedCameraScreen() {
     try {
       const photo = await cameraRef.current.takePhoto({
         flash: flash,
-        quality: 90,
-        skipMetadata: true,
       });
 
       debugLogger.success('Photo captured', {

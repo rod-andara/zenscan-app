@@ -86,10 +86,10 @@ export function DocumentDetectionOverlay({
     <View style={StyleSheet.absoluteFill} pointerEvents="none">
       <Svg width={viewWidth} height={viewHeight}>
         <AnimatedPolygon
-          animatedProps={animatedProps}
+          animatedProps={animatedProps as any}
           fill="rgba(20, 184, 166, 0.1)"
           stroke={strokeColor}
-          strokeWidth={4}
+          strokeWidth="4"
           strokeLinejoin="round"
         />
         {/* Corner markers */}
