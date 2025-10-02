@@ -1,240 +1,222 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
-  Platform,
-  Alert,
-  Linking,
+  Dimensions,
+  Animated,
 } from 'react-native';
-import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import { useRouter } from 'expo-router';
 import { colors, spacing, typography, borderRadius } from '../../design/tokens';
 import { useDocumentStore } from '../../stores/documentStore';
-import { debugLogger } from '../../utils/debugLogger';
-import { ScanMode } from '../../utils/documentDetection';
+import { useSubscriptionStore } from '../../stores/subscriptionStore';
 import { Document, Page } from '../../types';
-import { createDefaultEdits } from '../../utils/imageEdits';
+import { debugLogger } from '../../utils/debugLogger';
 
-const SCAN_MODES: { id: ScanMode; label: string; icon: string }[] = [
-  { id: 'document', label: 'Document', icon: '📄' },
-  { id: 'receipt', label: 'Receipt', icon: '🧾' },
-  { id: 'businessCard', label: 'Card', icon: '💳' },
-  { id: 'whiteboard', label: 'Board', icon: '📋' },
-  { id: 'photo', label: 'Photo', icon: '📷' },
-];
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export default function CameraScreen() {
+  const [permission, requestPermission] = useCameraPermissions();
+  const [isBatchMode, setIsBatchMode] = useState(false);
+  const [capturedPages, setCapturedPages] = useState<Page[]>([]);
+  const [detecting, setDetecting] = useState(false);
+  const cameraRef = useRef<CameraView>(null);
   const router = useRouter();
-  const cameraRef = useRef<Camera>(null);
-
-  const [cameraPosition, setCameraPosition] = useState<'back' | 'front'>('back');
-  const [flash, setFlash] = useState<'off' | 'on' | 'auto'>('off');
-  const [scanMode, setScanMode] = useState<ScanMode>('document');
-  const [isCapturing, setIsCapturing] = useState(false);
-  const [showModeSelector, setShowModeSelector] = useState(false);
-
-  const { hasPermission, requestPermission } = useCameraPermission();
-  const device = useCameraDevice(cameraPosition);
 
   const addDocument = useDocumentStore((state) => state.addDocument);
   const setCurrentDocument = useDocumentStore((state) => state.setCurrentDocument);
+  const isPremium = useSubscriptionStore((state) => state.isPremium);
+  const checkFeatureAccess = useSubscriptionStore((state) => state.checkFeatureAccess);
 
-  useEffect(() => {
-    if (!hasPermission) {
-      requestPermission();
-    }
-  }, [hasPermission, requestPermission]);
+  const pulseAnim = useRef(new Animated.Value(1)).current;
 
-  const handleCapture = useCallback(async () => {
-    if (!cameraRef.current || isCapturing) {
-      debugLogger.warn('Camera not ready or already capturing');
-      return;
-    }
+  if (!permission) {
+    return <View style={styles.container} />;
+  }
 
-    setIsCapturing(true);
-    debugLogger.info('📸 Capturing photo with Vision Camera');
-
-    try {
-      const photo = await cameraRef.current.takePhoto({
-        flash: flash,
-      });
-
-      debugLogger.success('Photo captured', {
-        width: photo.width,
-        height: photo.height,
-        path: photo.path.substring(0, 50) + '...',
-      });
-
-      const photoUri = `file://${photo.path}`;
-
-      const newPage: Page = {
-        id: Date.now().toString(),
-        uri: photoUri,
-        processedUri: photoUri,
-        originalUri: photoUri,
-        width: photo.width,
-        height: photo.height,
-        order: 0,
-        edits: createDefaultEdits(),
-      };
-
-      const newDocument: Document = {
-        id: Date.now().toString(),
-        title: `${SCAN_MODES.find((m) => m.id === scanMode)?.label} ${new Date().toLocaleDateString()}`,
-        pages: [newPage],
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-
-      debugLogger.info('Creating document', {
-        id: newDocument.id,
-        scanMode,
-      });
-
-      addDocument(newDocument);
-      setCurrentDocument(newDocument);
-
-      router.push('/edit/');
-    } catch (error) {
-      debugLogger.error('Failed to capture photo', error);
-      Alert.alert('Error', 'Failed to capture photo. Please try again.');
-    } finally {
-      setIsCapturing(false);
-    }
-  }, [flash, scanMode, isCapturing, addDocument, setCurrentDocument, router]);
-
-  const toggleFlash = useCallback(() => {
-    setFlash((current) => {
-      if (current === 'off') return 'auto';
-      if (current === 'auto') return 'on';
-      return 'off';
-    });
-  }, []);
-
-  const toggleCamera = useCallback(() => {
-    setCameraPosition((current) => (current === 'back' ? 'front' : 'back'));
-  }, []);
-
-  const handleNavigateToDocuments = useCallback(() => {
-    router.push('/(tabs)/documents');
-  }, [router]);
-
-  const openSettings = useCallback(() => {
-    Linking.openSettings();
-  }, []);
-
-  if (!hasPermission) {
+  if (!permission.granted) {
     return (
       <View style={styles.container}>
         <View style={styles.permissionContainer}>
           <Text style={styles.permissionIcon}>📷</Text>
-          <Text style={styles.permissionTitle}>Camera Permission Required</Text>
+          <Text style={styles.permissionTitle}>Camera Access Required</Text>
           <Text style={styles.permissionText}>
-            ZenScan needs camera access to scan documents
+            Quick Scan needs camera access to scan documents
           </Text>
           <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
-            <Text style={styles.permissionButtonText}>Grant Camera Access</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.settingsButton} onPress={openSettings}>
-            <Text style={styles.settingsButtonText}>Open Settings</Text>
+            <Text style={styles.permissionButtonText}>Grant Permission</Text>
           </TouchableOpacity>
         </View>
       </View>
     );
   }
 
-  if (!device) {
-    return (
-      <View style={styles.container}>
-        <Text style={styles.errorText}>No camera device found</Text>
-      </View>
-    );
-  }
+  const handleCapture = async () => {
+    debugLogger.info('📸 Capture button pressed');
+    if (!cameraRef.current) {
+      debugLogger.error('Camera ref not available');
+      return;
+    }
+
+    // Pulse animation for feedback
+    Animated.sequence([
+      Animated.timing(pulseAnim, {
+        toValue: 0.8,
+        duration: 100,
+        useNativeDriver: true,
+      }),
+      Animated.timing(pulseAnim, {
+        toValue: 1,
+        duration: 100,
+        useNativeDriver: true,
+      }),
+    ]).start();
+
+    try {
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 0.9,
+      });
+
+      if (!photo) {
+        debugLogger.warn('No photo returned from camera');
+        return;
+      }
+
+      debugLogger.success('Photo captured', {
+        width: photo.width,
+        height: photo.height,
+      });
+
+      const newPage: Page = {
+        id: Date.now().toString(),
+        uri: photo.uri,
+        originalUri: photo.uri,
+        width: photo.width,
+        height: photo.height,
+        order: capturedPages.length,
+        edits: {
+          rotation: 0,
+          brightness: 0,
+          contrast: 1,
+          saturation: 1,
+          sharpness: 1,
+          cropCorners: [
+            { x: 0.05, y: 0.05 },
+            { x: 0.95, y: 0.05 },
+            { x: 0.95, y: 0.95 },
+            { x: 0.05, y: 0.95 },
+          ],
+          preset: 'none',
+        },
+      };
+
+      if (isBatchMode && checkFeatureAccess('batch')) {
+        // Add to batch
+        debugLogger.info('Adding to batch', { pageCount: capturedPages.length + 1 });
+        setCapturedPages([...capturedPages, newPage]);
+      } else {
+        // Single page - create document and go to edit
+        const newDocument: Document = {
+          id: Date.now().toString(),
+          title: `Document ${new Date().toLocaleDateString()}`,
+          pages: [newPage],
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+
+        debugLogger.info('Creating new document', {
+          id: newDocument.id,
+          title: newDocument.title,
+        });
+        addDocument(newDocument);
+        setCurrentDocument(newDocument);
+        debugLogger.info('Navigating to edit screen');
+        router.push('/edit/');
+      }
+    } catch (error) {
+      debugLogger.error('Error capturing photo', error);
+    }
+  };
+
+  const handleBatchComplete = () => {
+    if (capturedPages.length === 0) return;
+
+    const newDocument: Document = {
+      id: Date.now().toString(),
+      title: `Document ${new Date().toLocaleDateString()}`,
+      pages: capturedPages,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    addDocument(newDocument);
+    setCurrentDocument(newDocument);
+    setCapturedPages([]);
+    router.push('/edit/');
+  };
+
+  const toggleBatchMode = () => {
+    if (!checkFeatureAccess('batch')) {
+      // TODO: Show paywall
+      return;
+    }
+    setIsBatchMode(!isBatchMode);
+  };
 
   return (
     <View style={styles.container}>
-      <Camera
-        ref={cameraRef}
-        style={StyleSheet.absoluteFill}
-        device={device}
-        isActive={true}
-        photo={true}
-        enableZoomGesture={true}
-        enableLocation={false}
-      />
+      <CameraView style={styles.camera} ref={cameraRef} facing="back" />
 
-      <View style={styles.detectionHintContainer}>
-        <Text style={styles.detectionHint}>Position document in view and tap capture</Text>
+      {/* Document detection overlay */}
+      <View style={styles.overlay}>
+        <View style={styles.detectionFrame}>
+          <View style={[styles.corner, styles.cornerTopLeft]} />
+          <View style={[styles.corner, styles.cornerTopRight]} />
+          <View style={[styles.corner, styles.cornerBottomLeft]} />
+          <View style={[styles.corner, styles.cornerBottomRight]} />
+        </View>
       </View>
 
+      {/* Top controls */}
       <View style={styles.topControls}>
-        <View style={styles.flashContainer}>
-          <TouchableOpacity style={styles.iconButton} onPress={toggleFlash}>
-            <Text style={styles.iconButtonText}>⚡</Text>
-            {flash !== 'off' && <View style={styles.activeIndicator} />}
-          </TouchableOpacity>
-          {flash !== 'off' && <Text style={styles.flashLabel}>{flash.toUpperCase()}</Text>}
-        </View>
-
         <TouchableOpacity
-          style={styles.modeButton}
-          onPress={() => setShowModeSelector(!showModeSelector)}
+          style={[styles.batchButton, isBatchMode && styles.batchButtonActive]}
+          onPress={toggleBatchMode}
         >
-          <Text style={styles.modeButtonIcon}>
-            {SCAN_MODES.find((m) => m.id === scanMode)?.icon}
+          <Text style={styles.batchButtonText}>
+            {isBatchMode ? `Batch (${capturedPages.length})` : 'Single'}
           </Text>
-          <Text style={styles.modeButtonText}>
-            {SCAN_MODES.find((m) => m.id === scanMode)?.label}
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.iconButton} onPress={handleNavigateToDocuments}>
-          <Text style={styles.iconButtonText}>📁</Text>
+          {!checkFeatureAccess('batch') && (
+            <View style={styles.premiumBadge}>
+              <Text style={styles.premiumBadgeText}>PRO</Text>
+            </View>
+          )}
         </TouchableOpacity>
       </View>
 
-      {showModeSelector && (
-        <View style={styles.modeSelectorContainer}>
-          {SCAN_MODES.map((mode) => (
-            <TouchableOpacity
-              key={mode.id}
-              style={[
-                styles.modeOption,
-                scanMode === mode.id && styles.modeOptionActive,
-              ]}
-              onPress={() => {
-                setScanMode(mode.id);
-                setShowModeSelector(false);
-              }}
-            >
-              <Text style={styles.modeOptionIcon}>{mode.icon}</Text>
-              <Text style={styles.modeOptionText}>{mode.label}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      )}
-
+      {/* Bottom controls */}
       <View style={styles.bottomControls}>
-        <View style={styles.leftControl}>
-          <TouchableOpacity style={styles.iconButton} onPress={toggleCamera}>
-            <Text style={styles.iconButtonText}>🔄</Text>
+        {isBatchMode && capturedPages.length > 0 && (
+          <TouchableOpacity style={styles.doneButton} onPress={handleBatchComplete}>
+            <Text style={styles.doneButtonText}>Done ({capturedPages.length})</Text>
           </TouchableOpacity>
-        </View>
+        )}
 
-        <TouchableOpacity
-          style={[styles.captureButton, isCapturing && styles.captureButtonDisabled]}
-          onPress={handleCapture}
-          disabled={isCapturing}
-        >
-          <View style={styles.captureButtonInner} />
-        </TouchableOpacity>
+        <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
+          <TouchableOpacity style={styles.captureButton} onPress={handleCapture}>
+            <View style={styles.captureButtonInner} />
+          </TouchableOpacity>
+        </Animated.View>
 
-        <View style={styles.rightControl} />
+        {isBatchMode && capturedPages.length > 0 && <View style={styles.spacer} />}
       </View>
 
-      <View style={styles.statusBarSafeArea} />
+      {/* Hint text */}
+      <View style={styles.hintContainer}>
+        <Text style={styles.hintText}>Position document within frame</Text>
+      </View>
     </View>
   );
 }
@@ -244,172 +226,99 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background.dark,
   },
-  permissionContainer: {
+  camera: {
     flex: 1,
+  },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
     justifyContent: 'center',
     alignItems: 'center',
-    padding: spacing.xl,
-    gap: spacing.md,
   },
-  permissionIcon: {
-    fontSize: 48,
+  detectionFrame: {
+    width: SCREEN_WIDTH * 0.85,
+    height: SCREEN_HEIGHT * 0.6,
+    position: 'relative',
   },
-  permissionTitle: {
-    ...typography.subheading,
-    color: colors.text.primary.dark,
-    textAlign: 'center',
-  },
-  permissionText: {
-    ...typography.body,
-    color: colors.text.secondary.dark,
-    textAlign: 'center',
-  },
-  permissionButton: {
-    backgroundColor: colors.primary.teal,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.xl,
-    borderRadius: borderRadius.full,
-  },
-  permissionButtonText: {
-    ...typography.button,
-    color: colors.text.primary.dark,
-  },
-  settingsButton: {
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.lg,
-    borderRadius: borderRadius.full,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
-  },
-  settingsButtonText: {
-    ...typography.button,
-    color: colors.text.secondary.dark,
-  },
-  errorText: {
-    ...typography.body,
-    color: colors.text.primary.dark,
-    textAlign: 'center',
-    padding: spacing.xl,
-  },
-  detectionHintContainer: {
+  corner: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 120 : 100,
-    left: spacing.md,
-    right: spacing.md,
-    alignItems: 'center',
+    width: 40,
+    height: 40,
+    borderColor: colors.primary.teal,
+    borderWidth: 4,
   },
-  detectionHint: {
-    ...typography.caption,
-    color: colors.text.primary.dark,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: borderRadius.full,
+  cornerTopLeft: {
+    top: 0,
+    left: 0,
+    borderBottomWidth: 0,
+    borderRightWidth: 0,
+    borderTopLeftRadius: borderRadius.md,
+  },
+  cornerTopRight: {
+    top: 0,
+    right: 0,
+    borderBottomWidth: 0,
+    borderLeftWidth: 0,
+    borderTopRightRadius: borderRadius.md,
+  },
+  cornerBottomLeft: {
+    bottom: 0,
+    left: 0,
+    borderTopWidth: 0,
+    borderRightWidth: 0,
+    borderBottomLeftRadius: borderRadius.md,
+  },
+  cornerBottomRight: {
+    bottom: 0,
+    right: 0,
+    borderTopWidth: 0,
+    borderLeftWidth: 0,
+    borderBottomRightRadius: borderRadius.md,
   },
   topControls: {
     position: 'absolute',
-    top: Platform.OS === 'ios' ? 60 : 40,
+    top: spacing.xl + spacing.md,
     left: spacing.md,
     right: spacing.md,
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    justifyContent: 'flex-end',
   },
-  iconButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    position: 'relative',
-  },
-  iconButtonText: {
-    fontSize: 24,
-  },
-  activeIndicator: {
-    position: 'absolute',
-    bottom: -4,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: colors.primary.teal,
-  },
-  flashContainer: {
-    alignItems: 'center',
-  },
-  flashLabel: {
-    ...typography.caption,
-    color: colors.text.primary.dark,
-    fontSize: 10,
-    marginTop: 2,
-  },
-  modeButton: {
+  batchButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     borderRadius: borderRadius.full,
     gap: spacing.xs,
   },
-  modeButtonIcon: {
-    fontSize: 20,
-  },
-  modeButtonText: {
-    ...typography.button,
-    color: colors.text.primary.dark,
-    fontSize: 14,
-  },
-  modeSelectorContainer: {
-    position: 'absolute',
-    top: Platform.OS === 'ios' ? 120 : 100,
-    left: spacing.md,
-    right: spacing.md,
-    backgroundColor: 'rgba(0, 0, 0, 0.9)',
-    borderRadius: borderRadius.lg,
-    padding: spacing.sm,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-  },
-  modeOption: {
-    flex: 1,
-    minWidth: 70,
-    alignItems: 'center',
-    padding: spacing.sm,
-    borderRadius: borderRadius.md,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  modeOptionActive: {
+  batchButtonActive: {
     backgroundColor: colors.primary.teal,
   },
-  modeOptionIcon: {
-    fontSize: 24,
-    marginBottom: 4,
-  },
-  modeOptionText: {
-    ...typography.caption,
+  batchButtonText: {
+    ...typography.button,
     color: colors.text.primary.dark,
-    fontSize: 11,
+  },
+  premiumBadge: {
+    backgroundColor: colors.primary.purple,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: 2,
+    borderRadius: borderRadius.sm,
+  },
+  premiumBadgeText: {
+    ...typography.caption,
+    fontSize: 10,
+    color: colors.text.primary.dark,
+    fontWeight: '700',
   },
   bottomControls: {
     position: 'absolute',
-    bottom: Platform.OS === 'ios' ? 40 : 24,
+    bottom: spacing.xxl,
     left: 0,
     right: 0,
     flexDirection: 'row',
-    justifyContent: 'space-around',
+    justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: spacing.xl,
-  },
-  leftControl: {
-    flex: 1,
-    alignItems: 'flex-start',
-  },
-  rightControl: {
-    flex: 1,
-    alignItems: 'flex-end',
+    gap: spacing.lg,
   },
   captureButton: {
     width: 80,
@@ -421,20 +330,69 @@ const styles = StyleSheet.create({
     borderWidth: 6,
     borderColor: 'rgba(255, 255, 255, 0.3)',
   },
-  captureButtonDisabled: {
-    opacity: 0.5,
-  },
   captureButtonInner: {
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: colors.text.primary.dark,
+    backgroundColor: 'white',
   },
-  statusBarSafeArea: {
+  doneButton: {
+    backgroundColor: colors.primary.purple,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderRadius: borderRadius.full,
+  },
+  doneButtonText: {
+    ...typography.button,
+    color: colors.text.primary.dark,
+  },
+  spacer: {
+    width: 120,
+  },
+  hintContainer: {
     position: 'absolute',
-    top: 0,
+    bottom: spacing.xl + 100,
     left: 0,
     right: 0,
-    height: Platform.OS === 'ios' ? 44 : 0,
+    alignItems: 'center',
+  },
+  hintText: {
+    ...typography.caption,
+    color: colors.text.primary.dark,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderRadius: borderRadius.full,
+  },
+  permissionContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.xl,
+  },
+  permissionIcon: {
+    fontSize: 64,
+    marginBottom: spacing.lg,
+  },
+  permissionTitle: {
+    ...typography.heading,
+    color: colors.text.primary.dark,
+    marginBottom: spacing.sm,
+  },
+  permissionText: {
+    ...typography.body,
+    color: colors.text.secondary.dark,
+    textAlign: 'center',
+    marginBottom: spacing.xl,
+  },
+  permissionButton: {
+    backgroundColor: colors.primary.teal,
+    paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.md,
+    borderRadius: borderRadius.full,
+  },
+  permissionButtonText: {
+    ...typography.button,
+    color: colors.text.primary.dark,
   },
 });
