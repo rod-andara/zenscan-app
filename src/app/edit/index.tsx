@@ -311,12 +311,10 @@ export default function EditScreen() {
         {/* Crop Overlay */}
         {showCropOverlay && (
           <CropOverlay
-            corners={edits.cropCorners}
+            corners={edits.cropCorners as any}
             imageWidth={currentPage.width}
             imageHeight={currentPage.height}
-            onCornersChange={handleCropCornersChange}
-            containerWidth={SCREEN_WIDTH}
-            containerHeight={PREVIEW_HEIGHT}
+            onCornersChange={handleCropCornersChange as any}
           />
         )}
       </View>

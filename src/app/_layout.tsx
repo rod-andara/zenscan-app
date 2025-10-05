@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Stack } from 'expo-router';
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StatusBar } from 'expo-status-bar';
 
 // Error boundary component
@@ -79,7 +78,7 @@ export default function RootLayout() {
   }
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
+    <View style={{ flex: 1 }}>
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="(tabs)" />
         <Stack.Screen
@@ -91,7 +90,7 @@ export default function RootLayout() {
         />
       </Stack>
       <StatusBar style="light" />
-    </GestureHandlerRootView>
+    </View>
   );
 }
 
