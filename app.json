@@ -2,7 +2,7 @@
   "expo": {
     "name": "ZenScan",
     "slug": "zenscan",
-    "version": "1.0.8",
+    "version": "1.0.9",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -16,7 +16,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.zenscan.app",
-      "buildNumber": "8",
+      "buildNumber": "9",
       "infoPlist": {
         "NSCameraUsageDescription": "ZenScan needs camera access to scan and detect documents",
         "ITSAppUsesNonExemptEncryption": false
