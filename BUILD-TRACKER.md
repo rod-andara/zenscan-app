@@ -11,7 +11,8 @@
 
 | Build | Date | Status | Issue | Fix | Notes |
 |-------|------|--------|-------|-----|-------|
-| **16** | Oct 1, 2025 | ✅ **LATEST** | Frame processor crash | Disabled frame processors | **Testing in progress** |
+| **9** | Oct 5, 2024 | ✅ **LATEST** | App crash on launch | Added error boundary | **Stability focused** |
+| **16** | Oct 1, 2025 | ✅ Working | Frame processor crash | Disabled frame processors | **Baseline stable version** |
 | 15 | Oct 1, 2025 | ❌ Crashed | Worklets + Frame processor | Pinned versions | Still crashed |
 | 14 | Oct 1, 2025 | ❌ Crashed | Location + Worklets | Disabled location | Exposed Worklets issue |
 | 13 | Oct 1, 2025 | ❌ Crashed | Location services | Added enableLocation=false | Incomplete fix |
@@ -22,14 +23,12 @@
 
 ---
 
-## 📦 Current Build: Build 16
+## 📦 Current Build: Build 9
 
-### **Status**: ✅ Submitted to TestFlight (Processing)
-### **Submitted**: October 1, 2025, 12:56:52
+### **Status**: 🔄 Ready to Build
+### **Version**: 1.0.9 (Build 9)
 
-**Build Details**: https://expo.dev/accounts/rod_andara/projects/zenscan/builds/db6e608e-7b46-4163-b61f-84f02e670639
-
-**Download IPA**: https://expo.dev/artifacts/eas/t6zWmwSejcxQEjsXosPJdz.ipa
+**Changes**: Comprehensive stability and error handling improvements
 
 **TestFlight**: https://appstoreconnect.apple.com/apps/6753142099/testflight/ios
 
@@ -51,7 +50,39 @@
 
 ## 🔄 Build History (Reverse Chronological)
 
-### **Build 16** - October 1, 2025, 12:56 ✅ LATEST
+### **Build 9** - October 5, 2024 ✅ LATEST
+**Issue**: App crashes on launch (SIGABRT in main thread)
+- Fatal errors during app initialization
+- No error boundaries to catch exceptions
+- Unstable app state causing crashes
+
+**Fix Applied**:
+- Added comprehensive error boundary to root layout
+- Implemented safe initialization with loading state
+- Added global error handler to catch fatal errors
+- Added error fallback UI for better user experience
+- Fixed TypeScript compilation errors
+
+**Key Changes**:
+```typescript
+// src/app/_layout.tsx
+- Added ErrorFallback component for graceful error display
+- Added error state management with useState
+- Added safe async initialization in useEffect
+- Added global ErrorUtils handler
+- Added loading state before app renders
+```
+
+**Commits**:
+- `8aa2f1f` - fix: Add comprehensive error handling and update to version 1.0.9 build 9
+
+**Status**: ✅ Committed to GitHub, ready for build
+**Expected**: App should launch without crashes, gracefully handle errors
+**Next Steps**: Create EAS build and test on TestFlight
+
+---
+
+### **Build 16** - October 1, 2025, 12:56 ✅ STABLE BASELINE
 **Issue**: Frame processor crash in production builds
 - Thread 7: SIGABRT in React dispatch queue (libdispatch.dylib)
 - Thread 12: RNWorklet::DispatchQueue crash
